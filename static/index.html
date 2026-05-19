@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scene detection — clip preview</title>
+    <style>
+      :root {
+        font-family: system-ui, sans-serif;
+        color: #e8e6e3;
+        background: #141414;
+      }
+      body {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 1.5rem;
+        line-height: 1.5;
+      }
+      h1 {
+        font-weight: 600;
+        font-size: 1.35rem;
+        margin-top: 0;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        margin-bottom: 1rem;
+      }
+      input[type="file"] {
+        max-width: 100%;
+      }
+      button {
+        background: #3b82f6;
+        color: #fff;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 6px;
+        font-size: 0.95rem;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      button.secondary {
+        background: #374151;
+      }
+      .status {
+        font-size: 0.9rem;
+        color: #9ca3af;
+        min-height: 1.5em;
+      }
+      .error {
+        color: #f87171;
+      }
+      .clips {
+        display: grid;
+        gap: 1.25rem;
+        margin-top: 1.5rem;
+      }
+      .clip {
+        background: #1f1f1f;
+        border-radius: 8px;
+        padding: 0.75rem;
+        border: 1px solid #2d2d2d;
+      }
+      .scene-clip-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 0.75rem;
+        margin-bottom: 0.5rem;
+      }
+      .scene-clip-head header {
+        flex: 1;
+        margin-bottom: 0;
+      }
+      .scene-clip-head .scene-clip-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        flex-shrink: 0;
+        justify-content: flex-end;
+        align-items: flex-start;
+      }
+      .section-title {
+        font-size: 1rem;
+        font-weight: 600;
+        margin: 1.5rem 0 0.5rem;
+        color: #d1d5db;
+      }
+      .merge-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.9rem;
+        color: #9ca3af;
+      }
+      .merge-label input {
+        width: 3.5rem;
+        padding: 0.35rem 0.5rem;
+        border-radius: 4px;
+        border: 1px solid #374151;
+        background: #1f1f1f;
+        color: #e8e6e3;
+      }
+      .clip header {
+        font-size: 0.85rem;
+        color: #9ca3af;
+        margin-bottom: 0.5rem;
+      }
+      video {
+        width: 100%;
+        max-height: 360px;
+        border-radius: 6px;
+        background: #000;
+      }
+      audio.scene-audio {
+        width: 100%;
+        margin-top: 0.75rem;
+      }
+      .no-audio {
+        font-size: 0.8rem;
+        color: #6b7280;
+        margin: 0.75rem 0 0;
+      }
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.65);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        padding: 1rem;
+        box-sizing: border-box;
+      }
+      .modal-backdrop.hidden {
+        display: none;
+      }
+      .modal-panel {
+        background: #1a1a1a;
+        border: 1px solid #333;
+        border-radius: 10px;
+        max-width: 640px;
+        width: 100%;
+        max-height: min(90vh, 720px);
+        display: flex;
+        flex-direction: column;
+        position: relative;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      }
+      .modal-close {
+        position: absolute;
+        top: 0.5rem;
+        right: 0.55rem;
+        background: transparent;
+        border: none;
+        color: #9ca3af;
+        font-size: 1.5rem;
+        line-height: 1;
+        cursor: pointer;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+      }
+      .modal-close:hover {
+        color: #fff;
+        background: #374151;
+      }
+      .modal-panel h3 {
+        margin: 0;
+        padding: 1rem 2.5rem 0.5rem 1rem;
+        font-size: 1rem;
+        font-weight: 600;
+        color: #f3f4f6;
+      }
+      .modal-panel .modal-audio {
+        margin: 0 1rem 0.75rem;
+        width: calc(100% - 2rem);
+      }
+      .modal-meta {
+        font-size: 0.8rem;
+        color: #9ca3af;
+        padding: 0 1rem 0.5rem;
+      }
+      .modal-transcript {
+        overflow-y: auto;
+        padding: 0 1rem 1rem;
+        flex: 1;
+        min-height: 0;
+      }
+      .transcript-seg {
+        border-bottom: 1px solid #2d2d2d;
+        padding: 0.65rem 0;
+      }
+      .transcript-seg:last-child {
+        border-bottom: none;
+      }
+      .transcript-time {
+        font-size: 0.72rem;
+        color: #6b7280;
+        font-variant-numeric: tabular-nums;
+        margin-bottom: 0.35rem;
+      }
+      .speaker-badge {
+        display: inline-block;
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: #a5b4fc;
+        background: #312e81;
+        padding: 0.15rem 0.45rem;
+        border-radius: 4px;
+        margin-bottom: 0.35rem;
+      }
+      .transcript-text {
+        font-size: 0.95rem;
+        line-height: 1.45;
+        color: #e5e7eb;
+      }
+      .transcript-word {
+        cursor: pointer;
+        border-radius: 2px;
+        padding: 0 1px;
+      }
+      .transcript-word:hover {
+        background: #374151;
+        color: #fff;
+      }
+      .modal-loading,
+      .modal-error {
+        padding: 1rem;
+        font-size: 0.9rem;
+        color: #9ca3af;
+      }
+      .explain-body {
+        white-space: pre-wrap;
+        font-size: 0.95rem;
+        line-height: 1.55;
+        color: #e5e7eb;
+        padding: 0 1rem 1rem;
+        overflow-y: auto;
+        flex: 1;
+        min-height: 0;
+      }
+      .explain-narration {
+        width: calc(100% - 2rem);
+        margin: 0 1rem 0.75rem;
+      }
+      .explain-narration.hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Shot &amp; scene clips</h1>
+    <p class="hint">
+      Shot + scene clips, with timed transcripts (Whisper). Start backend
+      <code style="background: #2d2d2d; padding: 0.1rem 0.35rem; border-radius: 4px"
+        >python -m app.main</code
+      >
+      and open this page at
+      <strong>http://127.0.0.1:8000</strong>
+      (not as a saved file). First Whisper run may download the speech model.
+      Optional <strong>speaker tags</strong>: use a Hugging Face token with access to
+      <code style="background: #2d2d2d; padding: 0.1rem 0.35rem; border-radius: 4px"
+        >pyannote/speaker-diarization-3.1</code
+      >
+      and run the server with
+      <code style="background: #2d2d2d; padding: 0.1rem 0.35rem; border-radius: 4px"
+        >HF_TOKEN=…</code
+      >
+      (names are generic Speaker 1 / 2, not cast names).
+      <strong>Explain scene</strong> needs
+      <code style="background: #2d2d2d; padding: 0.1rem 0.35rem; border-radius: 4px"
+        >OPENAI_API_KEY</code
+      >
+      in a project-root
+      <code style="background: #2d2d2d; padding: 0.1rem 0.35rem; border-radius: 4px"
+        >.env</code
+      >
+      file or environment variable (default vision model
+      <code style="background: #2d2d2d; padding: 0.1rem 0.35rem; border-radius: 4px"
+        >gpt-4o-mini</code
+      >). Scene explanations include optional
+      <strong>spoken narration</strong> via OpenAI TTS (
+      <code style="background: #2d2d2d; padding: 0.1rem 0.35rem; border-radius: 4px"
+        >tts-1</code
+      >, voice
+      <code style="background: #2d2d2d; padding: 0.1rem 0.35rem; border-radius: 4px"
+        >OPENAI_TTS_VOICE</code
+      >).
+    </p>
+    <div class="row">
+      <input id="file" type="file" accept="video/*" />
+      <label class="merge-label"
+        >Shots per scene
+        <input id="merge" type="number" min="1" max="50" value="3" />
+      </label>
+      <button type="button" id="process" disabled>Process</button>
+    </div>
+    <div class="status" id="status"></div>
+    <h2 class="section-title">Shots</h2>
+    <div class="clips" id="shots"></div>
+    <h2 class="section-title">Scenes (merged)</h2>
+    <div class="clips" id="scenes"></div>
+
+    <div class="modal-backdrop hidden" id="transcript-modal" aria-hidden="true">
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <button type="button" class="modal-close" id="modal-close" aria-label="Close">×</button>
+        <h3 id="modal-title">Transcript</h3>
+        <p class="modal-meta" id="modal-meta"></p>
+        <audio id="modal-audio" class="modal-audio" controls preload="metadata"></audio>
+        <div class="modal-transcript" id="modal-body"></div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop hidden" id="explain-modal" aria-hidden="true">
+      <div class="modal-panel explain-panel" role="dialog" aria-modal="true" aria-labelledby="explain-title">
+        <button type="button" class="modal-close" id="explain-close" aria-label="Close">×</button>
+        <h3 id="explain-title">Scene explanation</h3>
+        <p class="modal-meta" id="explain-meta"></p>
+        <audio
+          id="explain-narration-audio"
+          class="modal-audio explain-narration hidden"
+          controls
+          preload="metadata"
+        ></audio>
+        <div id="explain-body" class="explain-body"></div>
+      </div>
+    </div>
+
+    <script>
+      const fileInput = document.getElementById("file");
+      const mergeInput = document.getElementById("merge");
+      const processBtn = document.getElementById("process");
+      const statusEl = document.getElementById("status");
+      const shotsEl = document.getElementById("shots");
+      const scenesEl = document.getElementById("scenes");
+      const transcriptModal = document.getElementById("transcript-modal");
+      const modalTitle = document.getElementById("modal-title");
+      const modalMeta = document.getElementById("modal-meta");
+      const modalAudio = document.getElementById("modal-audio");
+      const modalBody = document.getElementById("modal-body");
+      const modalClose = document.getElementById("modal-close");
+      const explainModal = document.getElementById("explain-modal");
+      const explainTitle = document.getElementById("explain-title");
+      const explainMeta = document.getElementById("explain-meta");
+      const explainBody = document.getElementById("explain-body");
+      const explainClose = document.getElementById("explain-close");
+      const explainNarration = document.getElementById("explain-narration-audio");
+
+      let uploadedId = null;
+
+      function fmtRange(start, end) {
+        return `[${start.toFixed(2)}s – ${end.toFixed(2)}s]`;
+      }
+
+      function closeExplainModal() {
+        explainModal.classList.add("hidden");
+        explainModal.setAttribute("aria-hidden", "true");
+        explainBody.innerHTML = "";
+        explainMeta.textContent = "";
+        explainNarration.pause();
+        explainNarration.removeAttribute("src");
+        explainNarration.load();
+        explainNarration.classList.add("hidden");
+      }
+
+      function openExplainModal(videoId, scene) {
+        explainTitle.textContent = `Scene ${scene.index} · explanation`;
+        explainMeta.textContent = "Contacting model…";
+        explainBody.innerHTML =
+          '<p class="modal-loading">Sampling frames and sending to AI… This can take up to a minute.</p>';
+        explainNarration.pause();
+        explainNarration.removeAttribute("src");
+        explainNarration.load();
+        explainNarration.classList.add("hidden");
+        explainModal.classList.remove("hidden");
+        explainModal.setAttribute("aria-hidden", "false");
+        const qs = new URLSearchParams({ frame_interval_ms: "500" });
+        fetch(`/api/explain-scene/${videoId}/${scene.index}?${qs}`, {
+          method: "POST",
+        })
+          .then(async (r) => {
+            if (!r.ok) throw new Error(await r.text());
+            return r.json();
+          })
+          .then((data) => {
+            const parts = [];
+            if (data.cached) parts.push("From cache");
+            else if (data.frame_count != null)
+              parts.push(`${data.frame_count} frames @ ${data.frame_interval_ms}ms`);
+            if (data.explanation_audio_url) parts.push("narration ready");
+            explainMeta.textContent = parts.length ? parts.join(" · ") : "";
+            explainBody.textContent = data.explanation || "";
+            if (data.explanation_audio_url) {
+              explainNarration.src = data.explanation_audio_url;
+              explainNarration.classList.remove("hidden");
+            } else {
+              explainNarration.classList.add("hidden");
+            }
+          })
+          .catch((e) => {
+            explainMeta.textContent = "Error";
+            explainNarration.classList.add("hidden");
+            explainBody.innerHTML = `<p class="modal-error">${e.message || String(e)}</p>`;
+          });
+      }
+
+      function closeTranscriptModal() {
+        transcriptModal.classList.add("hidden");
+        transcriptModal.setAttribute("aria-hidden", "true");
+        modalAudio.pause();
+        modalAudio.removeAttribute("src");
+        modalAudio.load();
+        modalBody.innerHTML = "";
+        modalMeta.textContent = "";
+      }
+
+      function openTranscriptModal(scene) {
+        if (!scene.transcript_url || !scene.audio_url) return;
+        modalTitle.textContent = `Scene ${scene.index} · transcript`;
+        modalMeta.textContent = "";
+        modalBody.innerHTML =
+          '<p class="modal-loading">Loading transcript…</p>';
+        modalAudio.src = scene.audio_url;
+        transcriptModal.classList.remove("hidden");
+        transcriptModal.setAttribute("aria-hidden", "false");
+
+        fetch(scene.transcript_url)
+          .then(async (r) => {
+            if (!r.ok) throw new Error(await r.text());
+            return r.json();
+          })
+          .then((data) => {
+            const lang =
+              data.language && typeof data.language_probability === "number"
+                ? `${data.language} (${(data.language_probability * 100).toFixed(0)}% conf.)`
+                : data.language || "—";
+            let meta = `Language: ${lang}`;
+            const di = data.diarization;
+            if (di && di.enabled && di.speaker_count) {
+              meta += ` · ${di.speaker_count} speaker(s) auto-tagged`;
+            } else {
+              meta +=
+                " · Speaker tags off (set HF_TOKEN + install pyannote; see page hint)";
+            }
+            modalMeta.textContent = meta;
+            modalBody.innerHTML = "";
+            const segs = data.segments || [];
+            if (!segs.length) {
+              modalBody.innerHTML =
+                '<p class="modal-loading">No segments returned.</p>';
+              return;
+            }
+            segs.forEach((seg) => {
+              const wrap = document.createElement("div");
+              wrap.className = "transcript-seg";
+              const time = document.createElement("div");
+              time.className = "transcript-time";
+              time.textContent = fmtRange(seg.start, seg.end);
+              wrap.appendChild(time);
+              if (seg.speaker) {
+                const badge = document.createElement("div");
+                badge.className = "speaker-badge";
+                badge.textContent = seg.speaker;
+                wrap.appendChild(badge);
+              }
+              if (seg.words && seg.words.length) {
+                const line = document.createElement("div");
+                line.className = "transcript-text";
+                seg.words.forEach((w) => {
+                  const sp = document.createElement("span");
+                  sp.className = "transcript-word";
+                  sp.textContent = w.word + " ";
+                  sp.title = `${w.start.toFixed(2)}s`;
+                  sp.addEventListener("click", () => {
+                    modalAudio.currentTime = w.start;
+                    modalAudio.play().catch(() => {});
+                  });
+                  line.appendChild(sp);
+                });
+                wrap.appendChild(line);
+              } else {
+                const line = document.createElement("div");
+                line.className = "transcript-text";
+                line.textContent = seg.text || "";
+                wrap.appendChild(line);
+              }
+              modalBody.appendChild(wrap);
+            });
+          })
+          .catch((e) => {
+            modalBody.innerHTML = `<p class="modal-error">${e.message || String(e)}</p>`;
+          });
+      }
+
+      explainClose.addEventListener("click", closeExplainModal);
+      explainModal.addEventListener("click", (e) => {
+        if (e.target === explainModal) closeExplainModal();
+      });
+
+      modalClose.addEventListener("click", closeTranscriptModal);
+      transcriptModal.addEventListener("click", (e) => {
+        if (e.target === transcriptModal) closeTranscriptModal();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          if (!explainModal.classList.contains("hidden")) closeExplainModal();
+          else if (!transcriptModal.classList.contains("hidden")) closeTranscriptModal();
+        }
+      });
+
+      function setStatus(msg, isError = false) {
+        statusEl.textContent = msg || "";
+        statusEl.className = "status" + (isError ? " error" : "");
+      }
+
+      function uploadErrorHint(err) {
+        const m = err && err.message ? String(err.message) : String(err);
+        if (m === "Failed to fetch" || /network/i.test(m) || /load failed/i.test(m)) {
+          return (
+            m +
+            " — Is the server running? Open http://127.0.0.1:8000 (run `python -m app.main` from the project folder), not a file:// page."
+          );
+        }
+        return m;
+      }
+
+      fileInput.addEventListener("change", () => {
+        shotsEl.innerHTML = "";
+        scenesEl.innerHTML = "";
+        uploadedId = null;
+        const file = fileInput.files[0];
+        processBtn.disabled = !file;
+        if (!file) {
+          setStatus("");
+          return;
+        }
+        setStatus(
+          "File selected. Click Process to upload and analyze (requires server at this page’s address).",
+        );
+      });
+
+      processBtn.addEventListener("click", async () => {
+        const file = fileInput.files[0];
+        if (!file) {
+          setStatus("Choose a video file first.", true);
+          return;
+        }
+        shotsEl.innerHTML = "";
+        scenesEl.innerHTML = "";
+        processBtn.disabled = true;
+        uploadedId = null;
+        try {
+          setStatus("Uploading…");
+          const fd = new FormData();
+          fd.append("file", file);
+          const up = await fetch("/api/upload", { method: "POST", body: fd });
+          if (!up.ok) throw new Error(await up.text());
+          const upData = await up.json();
+          uploadedId = upData.id;
+          setStatus(
+            `Uploaded: ${upData.filename}. Detecting shots, scenes, audio & transcribing…`,
+          );
+
+          const n = Math.max(
+            1,
+            Math.min(50, parseInt(mergeInput.value, 10) || 3),
+          );
+          const res = await fetch(
+            `/api/process/${uploadedId}?shots_per_scene=${n}`,
+            { method: "POST" },
+          );
+          if (!res.ok) throw new Error(await res.text());
+          const data = await res.json();
+          setStatus(
+            `Done — ${data.shots.length} shot(s), ${data.scenes.length} scene(s) (≤${data.shots_per_scene} shots each).`,
+          );
+          data.shots.forEach((c) => {
+            const div = document.createElement("div");
+            div.className = "clip";
+            div.innerHTML = `
+              <header>Shot ${c.index} · ${c.start}s → ${c.end}s (${c.duration}s)</header>
+              <video src="${c.url}" controls playsinline></video>
+            `;
+            shotsEl.appendChild(div);
+          });
+          data.scenes.forEach((c) => {
+            const wrap = document.createElement("div");
+            wrap.className = "clip scene-clip";
+
+            const head = document.createElement("div");
+            head.className = "scene-clip-head";
+            const h = document.createElement("header");
+            const shots = c.shot_indices.join(", ");
+            h.textContent = `Scene ${c.index} · shots ${shots} · ${c.start}s → ${c.end}s (${c.duration}s)`;
+            head.appendChild(h);
+            const actions = document.createElement("div");
+            actions.className = "scene-clip-actions";
+            if (c.transcript_url && c.audio_url) {
+              const tbtn = document.createElement("button");
+              tbtn.type = "button";
+              tbtn.className = "secondary";
+              tbtn.textContent = "Transcript";
+              tbtn.addEventListener("click", () => openTranscriptModal(c));
+              actions.appendChild(tbtn);
+            }
+            const ebtn = document.createElement("button");
+            ebtn.type = "button";
+            ebtn.className = "secondary";
+            ebtn.textContent = "Explain scene";
+            ebtn.addEventListener("click", () => {
+              if (!uploadedId) return;
+              openExplainModal(uploadedId, c);
+            });
+            actions.appendChild(ebtn);
+            head.appendChild(actions);
+            wrap.appendChild(head);
+
+            const video = document.createElement("video");
+            video.src = c.url;
+            video.controls = true;
+            video.setAttribute("playsinline", "");
+            wrap.appendChild(video);
+
+            if (c.audio_url) {
+              const aud = document.createElement("audio");
+              aud.className = "scene-audio";
+              aud.src = c.audio_url;
+              aud.controls = true;
+              aud.preload = "metadata";
+              wrap.appendChild(aud);
+            } else {
+              const p = document.createElement("p");
+              p.className = "no-audio";
+              p.textContent =
+                "No audio track for this scene (source may be silent).";
+              wrap.appendChild(p);
+            }
+
+            scenesEl.appendChild(wrap);
+          });
+        } catch (e) {
+          setStatus(uploadErrorHint(e), true);
+        } finally {
+          processBtn.disabled = false;
+          if (!fileInput.files[0]) processBtn.disabled = true;
+        }
+      });
+    </script>
+  </body>
+</html>
