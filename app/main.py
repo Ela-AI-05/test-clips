@@ -697,13 +697,16 @@ def _openai_tts_to_mp3(
     api_key: str,
     text: str,
     out_path: Path,
+    voice: Optional[str] = None,
+    speed: float = 1.0,
 ) -> None:
     url = f"{base_url.rstrip('/')}/audio/speech"
     payload = {
         "model": config.OPENAI_TTS_MODEL,
-        "voice": config.OPENAI_TTS_VOICE,
+        "voice": voice or config.OPENAI_TTS_VOICE,
         "input": _tts_input_clip(text),
         "response_format": "mp3",
+        "speed": speed,
     }
     r = requests.post(
         url,
@@ -1538,6 +1541,180 @@ def explain_scene(
     )
 
 
+def _parse_enhanced_transcript_segments(enhanced_text: str) -> List[Dict]:
+    """Parse enhanced transcript into dialogue and enhancement segments.
+
+    Input format: [timestamp] [speaker] dialogue [enhancement1] [enhancement2]...
+
+    Returns: List of dicts with keys: timestamp, speaker, dialogue, enhancement
+    """
+    import re
+
+    segments = []
+    raw_segments = re.split(r'\n\n+', enhanced_text.strip())
+
+    for segment_text in raw_segments:
+        if not segment_text.strip():
+            continue
+
+        # Extract timestamp [6.8s–9.7s]
+        timestamp_match = re.match(r'\[([^\]]+)\]', segment_text)
+        if not timestamp_match:
+            continue
+        timestamp = f"[{timestamp_match.group(1)}]"
+
+        # Remove timestamp and extract rest
+        rest = segment_text[timestamp_match.end():].strip()
+
+        # Extract speaker [Female/Park Visitor]
+        speaker_match = re.match(r'\[([^\]]+)\]', rest)
+        if not speaker_match:
+            continue
+        speaker = f"[{speaker_match.group(1)}]"
+
+        # Remove speaker and extract dialogue + enhancements
+        dialogue_and_enhancements = rest[speaker_match.end():].strip()
+
+        # Extract all bracketed enhancements from the end
+        enhancements = []
+        enhancement_pattern = r'\s*\[([^\]]+)\]\s*$'
+
+        while True:
+            enhancement_match = re.search(enhancement_pattern, dialogue_and_enhancements)
+            if not enhancement_match:
+                break
+            enhancements.insert(0, enhancement_match.group(1))
+            dialogue_and_enhancements = dialogue_and_enhancements[:enhancement_match.start()]
+
+        dialogue = dialogue_and_enhancements.strip()
+        enhancement_text = " ".join(enhancements) if enhancements else ""
+
+        segments.append({
+            "timestamp": timestamp,
+            "speaker": speaker,
+            "dialogue": dialogue,
+            "enhancement": enhancement_text,
+        })
+
+    return segments
+
+
+def _create_silence_mp3(duration_seconds: float, output_path: Path) -> None:
+    """Generate silent MP3 file using ffmpeg."""
+    ffmpeg = _which_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found on PATH")
+
+    subprocess.run(
+        [
+            ffmpeg,
+            "-f", "lavfi",
+            "-i", f"anullsrc=r=24000:cl=mono",
+            "-t", str(duration_seconds),
+            "-q:a", "9",
+            "-acodec", "libmp3lame",
+            str(output_path),
+        ],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+
+
+def _merge_mp3_files(mp3_files: List[Path], output_path: Path) -> None:
+    """Merge multiple MP3 files using ffmpeg concat demuxer."""
+    ffmpeg = _which_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found on PATH")
+
+    # Create concat demuxer file
+    concat_file = output_path.parent / ".concat_list.txt"
+    lines = [f"file '{f.absolute()}'" for f in mp3_files]
+    concat_file.write_text("\n".join(lines))
+
+    try:
+        subprocess.run(
+            [
+                ffmpeg,
+                "-f", "concat",
+                "-safe", "0",
+                "-i", str(concat_file),
+                "-c", "copy",
+                str(output_path),
+            ],
+            capture_output=True,
+            check=True,
+            timeout=60,
+        )
+    finally:
+        concat_file.unlink(missing_ok=True)
+
+
+def _openai_tts_to_mp3_dual_voice(
+    *,
+    base_url: str,
+    api_key: str,
+    segments: List[Dict],
+    out_path: Path,
+) -> None:
+    """Generate dual-voice TTS with different voices for dialogue and enhancements."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        all_mp3_files = []
+
+        for idx, segment in enumerate(segments):
+            # Generate dialogue audio (strong voice, normal speed)
+            dialogue_text = f"{segment['speaker']} {segment['dialogue']}"
+            dialogue_mp3 = tmp_path / f"dialogue_{idx:03d}.mp3"
+
+            try:
+                _openai_tts_to_mp3(
+                    base_url=base_url,
+                    api_key=api_key,
+                    text=dialogue_text,
+                    out_path=dialogue_mp3,
+                    voice=config.OPENAI_TTS_VOICE,
+                    speed=config.OPENAI_TTS_DIALOGUE_SPEED,
+                )
+                all_mp3_files.append(dialogue_mp3)
+            except Exception as e:
+                print(f"Failed to generate dialogue audio for segment {idx}: {e}")
+                continue
+
+            # Generate enhancement audio (softer voice, slower speed) if enhancements exist
+            if segment["enhancement"].strip():
+                # Add 0.5s silence between dialogue and enhancement for clarity
+                silence_mp3 = tmp_path / f"silence_{idx:03d}.mp3"
+                try:
+                    _create_silence_mp3(0.5, silence_mp3)
+                    all_mp3_files.append(silence_mp3)
+                except Exception as e:
+                    print(f"Failed to generate silence: {e}")
+
+                enhancement_mp3 = tmp_path / f"enhancement_{idx:03d}.mp3"
+
+                try:
+                    _openai_tts_to_mp3(
+                        base_url=base_url,
+                        api_key=api_key,
+                        text=segment["enhancement"],
+                        out_path=enhancement_mp3,
+                        voice=config.OPENAI_TTS_ENHANCEMENT_VOICE,
+                        speed=config.OPENAI_TTS_ENHANCEMENT_SPEED,
+                    )
+                    all_mp3_files.append(enhancement_mp3)
+                except Exception as e:
+                    print(f"Failed to generate enhancement audio for segment {idx}: {e}")
+
+        # Merge all MP3 files
+        if all_mp3_files:
+            _merge_mp3_files(all_mp3_files, out_path)
+        else:
+            raise RuntimeError("No MP3 files generated for merging")
+
+
 @app.post("/api/enhance-transcript/{video_id}/{scene_index}")
 def enhance_transcript(
     video_id: str,
@@ -1644,20 +1821,44 @@ def enhance_transcript(
     (video_dir / "explanations").mkdir(parents=True, exist_ok=True)
     enhanced_cache.write_text(enhanced_text, encoding="utf-8")
 
-    # Generate TTS audio
+    # Generate dual-voice TTS audio
     audio_url = None
     mp3_path = video_dir / "explanations" / f"scene_{scene_index:03d}_enhanced_transcript.mp3"
     if config.OPENAI_API_KEY and not mp3_path.is_file():
         try:
-            text_to_speak = _tts_input_clip(enhanced_text)
-            _openai_tts_to_mp3(
-                base_url=config.OPENAI_BASE_URL,
-                api_key=config.OPENAI_API_KEY,
-                text=text_to_speak,
-                out_path=mp3_path,
-            )
+            # Parse enhanced transcript into dialogue and enhancement segments
+            segments = _parse_enhanced_transcript_segments(enhanced_text)
+
+            # Generate dual-voice audio
+            if segments:
+                _openai_tts_to_mp3_dual_voice(
+                    base_url=config.OPENAI_BASE_URL,
+                    api_key=config.OPENAI_API_KEY,
+                    segments=segments,
+                    out_path=mp3_path,
+                )
+            else:
+                # Fallback to single-voice if parsing fails
+                text_to_speak = _tts_input_clip(enhanced_text)
+                _openai_tts_to_mp3(
+                    base_url=config.OPENAI_BASE_URL,
+                    api_key=config.OPENAI_API_KEY,
+                    text=text_to_speak,
+                    out_path=mp3_path,
+                )
         except Exception as e:
             print(f"TTS generation failed for enhanced transcript: {e}")
+            # Attempt single-voice fallback
+            try:
+                text_to_speak = _tts_input_clip(enhanced_text)
+                _openai_tts_to_mp3(
+                    base_url=config.OPENAI_BASE_URL,
+                    api_key=config.OPENAI_API_KEY,
+                    text=text_to_speak,
+                    out_path=mp3_path,
+                )
+            except Exception as fallback_e:
+                print(f"Fallback single-voice TTS also failed: {fallback_e}")
 
     if mp3_path.is_file():
         audio_url = f"/api/explanations/{video_id}/scene_{scene_index:03d}_enhanced_transcript.mp3"

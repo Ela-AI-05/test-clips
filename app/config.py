@@ -157,6 +157,15 @@ OPENAI_TTS_MAX_INPUT_CHARS: int = int(os.environ.get("OPENAI_TTS_MAX_INPUT_CHARS
 OPENAI_TTS_TIMEOUT: int = int(os.environ.get("OPENAI_TTS_TIMEOUT", "120"))
 """Timeout in seconds for TTS API call"""
 
+OPENAI_TTS_DIALOGUE_SPEED: float = float(os.environ.get("OPENAI_TTS_DIALOGUE_SPEED", "1.0"))
+"""TTS speed for dialogue portions (1.0 = normal speed)"""
+
+OPENAI_TTS_ENHANCEMENT_VOICE: str = os.environ.get("OPENAI_TTS_ENHANCEMENT_VOICE", "nova")
+"""TTS voice for enhancement portions (distinct voice for bracketed details)"""
+
+OPENAI_TTS_ENHANCEMENT_SPEED: float = float(os.environ.get("OPENAI_TTS_ENHANCEMENT_SPEED", "0.85"))
+"""TTS speed for enhancement portions (slower/more measured than dialogue)"""
+
 
 # ============================================================================
 # SUMMARY AUDIO TIMING
