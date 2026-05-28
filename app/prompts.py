@@ -15,7 +15,12 @@ Work in two clear mental steps:
    - The **scene-specific transcript** (dialogue and speakers if tagged),
    - The **video frames** provided in order (each from a moment in the scene). From the frames, infer **setting, action, blocking, cinematography**, and **facial/body language** to reason about **mood and emotion** (e.g. tension, joy, fear). Be honest when unclear.
 
-Your task: write a clear **scene explanation** for the user—what is happening, why it matters in context, and how it feels emotionally. When you infer emotion from visuals, say what you see (expressions, posture, staging) that supports it. Do not invent plot facts that contradict the transcripts; do not name actors unless they appear in the text."""
+If provided, use the **video context** to identify characters and objects:
+- Character tracking shows which faces appear throughout the entire video
+- Only mention character names if confidence is 70% or higher; otherwise use "the man", "the woman", etc.
+- For objects: mention if they appear in earlier scenes (e.g., "the briefcase he carried from Scene 1")
+
+Your task: write a clear **scene explanation** for the user—what is happening, why it matters in context, and how it feels emotionally. When you infer emotion from visuals, say what you see (expressions, posture, staging) that supports it. Do not invent plot facts that contradict the transcripts; do not name actors unless they appear in the text or video context."""
 
 
 def build_scene_explain_user_text(
@@ -24,18 +29,89 @@ def build_scene_explain_user_text(
     scene_transcript: str,
     frame_count: int,
     frame_interval_ms: int,
+    video_context_text: str = "",
 ) -> str:
-    """Compose the user-message text for the scene-explanation request."""
-    return (
+    """Compose the user-message text for the scene-explanation request.
+
+    Args:
+        full_transcript: Full video transcript for narrative context
+        scene_transcript: Scene-specific dialogue
+        frame_count: Number of video frames provided
+        frame_interval_ms: Frame sampling interval in milliseconds
+        video_context_text: Character and object tracking info (optional)
+    """
+    text = (
         "## Full video transcript (all scenes — context)\n\n"
         f"{full_transcript}\n\n"
         "## This scene — transcript (focus)\n\n"
         f"{scene_transcript}\n\n"
+    )
+
+    if video_context_text:
+        text += (
+            "## Video context (character and object tracking)\n\n"
+            f"{video_context_text}\n\n"
+        )
+
+    text += (
         "## Video frames\n\n"
         f"There are {frame_count} still images, sampled about every "
         f"{frame_interval_ms} ms through this scene, in order. Use them for "
         "setting, action, faces, body language, and emotional tone."
     )
+
+    return text
+
+
+def format_video_context_for_prompt(
+    video_context,
+    character_confidence_threshold: int = 70,
+) -> str:
+    """Format video context data as text for the prompt.
+
+    Args:
+        video_context: VideoContext object with characters and objects
+        character_confidence_threshold: Only mention names above this confidence %
+
+    Returns:
+        Formatted text describing characters and objects
+    """
+    if not video_context:
+        return ""
+
+    lines = []
+
+    # Character information
+    if video_context.characters:
+        lines.append("**Characters:**")
+        for char in video_context.characters:
+            conf_pct = int(char.confidence * 100)
+            appearance_count = len(char.appearances)
+
+            if conf_pct >= character_confidence_threshold:
+                lines.append(
+                    f"- Character #{char.id} ('{char.name}', {conf_pct}% confidence): "
+                    f"appears in {appearance_count} frame(s) throughout the video"
+                )
+            else:
+                lines.append(
+                    f"- Character #{char.id}: appears in {appearance_count} frame(s) "
+                    f"({conf_pct}% confidence, below naming threshold)"
+                )
+        lines.append("")
+
+    # Object information
+    if video_context.objects:
+        lines.append("**Objects/Props tracked:**")
+        for obj in video_context.objects:
+            appearance_count = len(obj.appearances)
+            lines.append(
+                f"- '{obj.class_label}' (Object #{obj.id}): "
+                f"appears in {appearance_count} frame(s) across video"
+            )
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 SCENE_SUMMARY_SYSTEM_PROMPT = """You are an expert at creating concise scene summaries for video narration.

@@ -15,6 +15,17 @@ _config_root = Path(__file__).resolve().parent.parent
 load_dotenv(_config_root / ".env")
 
 # ============================================================================
+# TRANSCRIPTION (Speech-to-Text)
+# ============================================================================
+
+TRANSCRIPTION_PROVIDER: str = os.environ.get("TRANSCRIPTION_PROVIDER", "whisper")
+"""Transcription provider to use. Options: whisper, assemblyai"""
+
+ASSEMBLYAI_API_KEY: str = os.environ.get("ASSEMBLYAI_API_KEY", "").strip()
+"""AssemblyAI API key (required for AssemblyAI provider)"""
+
+
+# ============================================================================
 # WHISPER (Speech Recognition)
 # ============================================================================
 
@@ -159,3 +170,30 @@ SUMMARY_MIN_WORDS: int = 30
 
 SUMMARY_MAX_WORDS: int = 500
 """Maximum word count for summaries (for very long scenes)"""
+
+
+# ============================================================================
+# VIDEO CONTEXT (Character & Object Detection)
+# ============================================================================
+
+SPARSE_FRAME_INTERVAL_MS: int = int(os.environ.get("SPARSE_FRAME_INTERVAL_MS", "2000"))
+"""Frame interval for sparse video-level analysis (1 frame per 2 seconds = 2000ms)"""
+
+FACE_CLUSTERING_THRESHOLD: float = float(
+    os.environ.get("FACE_CLUSTERING_THRESHOLD", "0.6")
+)
+"""Face clustering threshold for grouping same person (0.6 = balanced)"""
+
+CHARACTER_CONFIDENCE_THRESHOLD_PERCENT: int = int(
+    os.environ.get("CHARACTER_CONFIDENCE_THRESHOLD_PERCENT", "70")
+)
+"""Only mention character names if detected with this confidence or higher (70%)"""
+
+YOLOV8_MODEL: str = os.environ.get("YOLOV8_MODEL", "yolov8m")
+"""YOLOv8 model to use. Options: yolov8n (nano), yolov8s (small), yolov8m (medium, default)"""
+
+YOLOV8_CONF_THRESHOLD: float = float(os.environ.get("YOLOV8_CONF_THRESHOLD", "0.5"))
+"""YOLOv8 confidence threshold for object detection (0.5 = standard)"""
+
+VIDEO_CONTEXT_CACHE_DIR: str = os.environ.get("VIDEO_CONTEXT_CACHE_DIR", "video_context")
+"""Subdirectory name within outputs/ for storing video context JSON files"""
