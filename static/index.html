@@ -83,7 +83,23 @@
         gap: 0.4rem;
         flex-shrink: 0;
         justify-content: flex-end;
-        align-items: flex-start;
+        align-items: center;
+      }
+      .frame-interval-selector {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        font-size: 0.8rem;
+        color: #9ca3af;
+      }
+      .frame-interval-selector select {
+        padding: 0.25rem 0.4rem;
+        border-radius: 4px;
+        border: 1px solid #374151;
+        background: #1f1f1f;
+        color: #e8e6e3;
+        font-size: 0.8rem;
+        cursor: pointer;
       }
       .section-title {
         font-size: 1rem;
@@ -251,6 +267,33 @@
       .explain-narration.hidden {
         display: none;
       }
+      .explain-sections {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        padding: 0 1rem 1rem;
+        overflow-y: auto;
+        flex: 1;
+        min-height: 0;
+      }
+      .explain-section {
+        display: flex;
+        flex-direction: column;
+      }
+      .explain-section-title {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: #d1d5db;
+        margin-bottom: 0.5rem;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .explain-section-content {
+        white-space: pre-wrap;
+        font-size: 0.95rem;
+        line-height: 1.55;
+        color: #e5e7eb;
+      }
     </style>
   </head>
   <body>
@@ -298,36 +341,127 @@
         >Shots per scene
         <input id="merge" type="number" min="1" max="50" value="3" />
       </label>
+      <fieldset class="provider-selector" style="border: 1px solid #374151; padding: 0.5rem 0.75rem; border-radius: 4px; margin: 0; display: flex; gap: 1rem; align-items: center;">
+        <legend style="padding: 0 0.25rem; font-size: 0.85rem; color: #9ca3af;">Transcription:</legend>
+        <label style="display: flex; align-items: center; gap: 0.3rem; cursor: pointer;">
+          <input type="radio" id="provider-whisper" name="transcription-provider" value="whisper" checked />
+          <span>Whisper</span>
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.3rem; cursor: pointer;">
+          <input type="radio" id="provider-assemblyai" name="transcription-provider" value="assemblyai" />
+          <span>AssemblyAI</span>
+        </label>
+      </fieldset>
       <button type="button" id="process" disabled>Process</button>
+      <button type="button" id="clear" class="secondary">Clear All</button>
     </div>
     <div class="status" id="status"></div>
     <h2 class="section-title">Shots</h2>
     <div class="clips" id="shots"></div>
     <h2 class="section-title">Scenes (merged)</h2>
+    <div style="display: flex; gap: 0.75rem; margin-bottom: 1rem; align-items: center;">
+      <button type="button" id="full-transcript-btn" class="secondary" style="display: none;">View Full Transcript</button>
+      <span id="full-transcript-status" style="font-size: 0.9rem; color: #9ca3af;"></span>
+    </div>
     <div class="clips" id="scenes"></div>
 
     <div class="modal-backdrop hidden" id="transcript-modal" aria-hidden="true">
       <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-        <button type="button" class="modal-close" id="modal-close" aria-label="Close">×</button>
-        <h3 id="modal-title">Transcript</h3>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+          <h3 id="modal-title" style="margin: 0;">Transcript</h3>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button type="button" id="transcript-download-txt" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="Download as plain text">Download (.txt)</button>
+            <button type="button" id="transcript-download-vtt" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="Download as WebVTT subtitle file">Download (.vtt)</button>
+            <button type="button" class="modal-close" id="modal-close" aria-label="Close">×</button>
+          </div>
+        </div>
         <p class="modal-meta" id="modal-meta"></p>
         <audio id="modal-audio" class="modal-audio" controls preload="metadata"></audio>
         <div class="modal-transcript" id="modal-body"></div>
       </div>
     </div>
 
+    <div class="modal-backdrop hidden" id="full-transcript-modal" aria-hidden="true">
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="full-transcript-title">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+          <h3 id="full-transcript-title" style="margin: 0;">Full Video Transcript</h3>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button type="button" id="full-transcript-download-txt" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="Download as plain text">Download (.txt)</button>
+            <button type="button" id="full-transcript-download-vtt" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="Download as WebVTT subtitle file">Download (.vtt)</button>
+            <button type="button" class="modal-close" id="full-transcript-close" aria-label="Close">×</button>
+          </div>
+        </div>
+        <p class="modal-meta" id="full-transcript-meta"></p>
+        <div class="modal-transcript" id="full-transcript-body"></div>
+      </div>
+    </div>
+
     <div class="modal-backdrop hidden" id="explain-modal" aria-hidden="true">
       <div class="modal-panel explain-panel" role="dialog" aria-modal="true" aria-labelledby="explain-title">
-        <button type="button" class="modal-close" id="explain-close" aria-label="Close">×</button>
-        <h3 id="explain-title">Scene explanation</h3>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+          <h3 id="explain-title" style="margin: 0;">Scene explanation</h3>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 0.3rem; font-size: 0.8rem; color: #9ca3af;">
+              <label for="modal-frame-interval">Frames/sec:</label>
+              <select id="modal-frame-interval" style="padding: 0.25rem 0.4rem; border-radius: 4px; border: 1px solid #374151; background: #1f1f1f; color: #e8e6e3; font-size: 0.8rem; cursor: pointer;">
+                <option value="200" title="5 frames/sec - most detailed">5/s</option>
+                <option value="500" title="2 frames/sec - balanced" selected>2/s</option>
+                <option value="1000" title="1 frame/sec - faster">1/s</option>
+                <option value="2000" title="0.5 frames/sec - minimal">0.5/s</option>
+              </select>
+            </div>
+            <button type="button" id="explain-regenerate" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">Regenerate</button>
+            <button type="button" class="modal-close" id="explain-close" aria-label="Close">×</button>
+          </div>
+        </div>
         <p class="modal-meta" id="explain-meta"></p>
-        <audio
-          id="explain-narration-audio"
-          class="modal-audio explain-narration hidden"
-          controls
-          preload="metadata"
-        ></audio>
-        <div id="explain-body" class="explain-body"></div>
+        <div id="audio-section" style="padding: 0 1rem; display: none;">
+          <div style="margin-bottom: 0.75rem;">
+            <div style="font-size: 0.85rem; font-weight: 600; color: #d1d5db; margin-bottom: 0.35rem;">Explanation Audio</div>
+            <audio
+              id="explain-narration-audio"
+              class="modal-audio"
+              controls
+              preload="metadata"
+            ></audio>
+          </div>
+          <div>
+            <div style="font-size: 0.85rem; font-weight: 600; color: #d1d5db; margin-bottom: 0.35rem;">Summary Audio</div>
+            <audio
+              id="summary-narration-audio"
+              class="modal-audio"
+              controls
+              preload="metadata"
+              style="display: none;"
+            ></audio>
+            <p class="no-audio" id="no-summary-audio" style="margin: 0; font-size: 0.8rem; color: #6b7280;">Generating summary audio…</p>
+          </div>
+          <div>
+            <div style="font-size: 0.85rem; font-weight: 600; color: #d1d5db; margin-bottom: 0.35rem;">Grounded Summary Audio</div>
+            <audio
+              id="grounded-narration-audio"
+              class="modal-audio"
+              controls
+              preload="metadata"
+              style="display: none;"
+            ></audio>
+            <p class="no-audio" id="no-grounded-audio" style="margin: 0; font-size: 0.8rem; color: #6b7280;">Generating grounded summary audio…</p>
+          </div>
+        </div>
+        <div id="explain-sections" class="explain-sections">
+          <div id="explanation-section" class="explain-section">
+            <div class="explain-section-title">Full Explanation</div>
+            <div id="explain-body" class="explain-section-content"></div>
+          </div>
+          <div id="summary-section" class="explain-section" style="display: none;">
+            <div class="explain-section-title">Summary (Scene Duration)</div>
+            <div id="explain-summary" class="explain-section-content"></div>
+          </div>
+          <div id="grounded-summary-section" class="explain-section" style="display: none;">
+            <div class="explain-section-title">Grounded Summary (Scene Duration)</div>
+            <div id="explain-grounded-summary" class="explain-section-content"></div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -335,6 +469,7 @@
       const fileInput = document.getElementById("file");
       const mergeInput = document.getElementById("merge");
       const processBtn = document.getElementById("process");
+      const clearBtn = document.getElementById("clear");
       const statusEl = document.getElementById("status");
       const shotsEl = document.getElementById("shots");
       const scenesEl = document.getElementById("scenes");
@@ -348,10 +483,23 @@
       const explainTitle = document.getElementById("explain-title");
       const explainMeta = document.getElementById("explain-meta");
       const explainBody = document.getElementById("explain-body");
+      const explainSummary = document.getElementById("explain-summary");
+      const summarySection = document.getElementById("summary-section");
+      const explainGroundedSummary = document.getElementById("explain-grounded-summary");
+      const groundedSummarySection = document.getElementById("grounded-summary-section");
       const explainClose = document.getElementById("explain-close");
       const explainNarration = document.getElementById("explain-narration-audio");
+      const summaryNarration = document.getElementById("summary-narration-audio");
+      const groundedNarration = document.getElementById("grounded-narration-audio");
+      const audioSection = document.getElementById("audio-section");
+      const noSummaryAudio = document.getElementById("no-summary-audio");
+      const noGroundedAudio = document.getElementById("no-grounded-audio");
+      const explainRegenerateBtn = document.getElementById("explain-regenerate");
+      const modalFrameIntervalSelect = document.getElementById("modal-frame-interval");
 
       let uploadedId = null;
+      let currentExplainScene = null; // { videoId, scene, frameInterval }
+      let currentFullTranscriptData = null;
 
       function fmtRange(start, end) {
         return `[${start.toFixed(2)}s – ${end.toFixed(2)}s]`;
@@ -361,14 +509,119 @@
         explainModal.classList.add("hidden");
         explainModal.setAttribute("aria-hidden", "true");
         explainBody.innerHTML = "";
+        explainSummary.innerHTML = "";
+        summarySection.style.display = "none";
+        explainGroundedSummary.innerHTML = "";
+        groundedSummarySection.style.display = "none";
         explainMeta.textContent = "";
+        audioSection.style.display = "none";
         explainNarration.pause();
         explainNarration.removeAttribute("src");
         explainNarration.load();
-        explainNarration.classList.add("hidden");
+        summaryNarration.pause();
+        summaryNarration.removeAttribute("src");
+        summaryNarration.load();
+        summaryNarration.style.display = "none";
+        groundedNarration.pause();
+        groundedNarration.removeAttribute("src");
+        groundedNarration.load();
+        groundedNarration.style.display = "none";
+        currentExplainScene = null;
+        explainRegenerateBtn.disabled = true;
       }
 
-      function openExplainModal(videoId, scene) {
+      function _displayExplanation(data) {
+        const parts = [];
+        if (data.cached) parts.push("From cache");
+        else if (data.frame_count != null)
+          parts.push(`${data.frame_count} frames @ ${data.frame_interval_ms}ms`);
+        if (data.duration_seconds != null)
+          parts.push(`${data.duration_seconds.toFixed(1)}s scene`);
+        if (data.explanation_audio_url) parts.push("narration ready");
+        explainMeta.textContent = parts.length ? parts.join(" · ") : "";
+        explainBody.textContent = data.explanation || "";
+
+        if (data.summary) {
+          explainSummary.textContent = data.summary;
+          summarySection.style.display = "flex";
+        } else {
+          explainSummary.textContent = "";
+          summarySection.style.display = "none";
+        }
+
+        if (data.grounded_summary) {
+          explainGroundedSummary.textContent = data.grounded_summary;
+          groundedSummarySection.style.display = "flex";
+        } else {
+          explainGroundedSummary.textContent = "";
+          groundedSummarySection.style.display = "none";
+        }
+
+        let hasAudio = false;
+        if (data.explanation_audio_url) {
+          explainNarration.src = data.explanation_audio_url;
+          hasAudio = true;
+        }
+
+        if (data.summary_audio_url) {
+          summaryNarration.src = data.summary_audio_url;
+          summaryNarration.style.display = "block";
+          noSummaryAudio.style.display = "none";
+          hasAudio = true;
+        } else if (data.summary) {
+          summaryNarration.style.display = "none";
+          noSummaryAudio.style.display = "block";
+        }
+
+        if (data.grounded_summary_audio_url) {
+          groundedNarration.src = data.grounded_summary_audio_url;
+          groundedNarration.style.display = "block";
+          noGroundedAudio.style.display = "none";
+          hasAudio = true;
+        } else if (data.grounded_summary) {
+          groundedNarration.style.display = "none";
+          noGroundedAudio.style.display = "block";
+        }
+
+        if (hasAudio) {
+          audioSection.style.display = "block";
+        }
+      }
+
+      function _fetchExplanation(videoId, scene, frameInterval = 500, regenerate = false) {
+        const qs = new URLSearchParams({ frame_interval_ms: String(frameInterval) });
+        if (regenerate) {
+          qs.append("regenerate", "true");
+        }
+        fetch(`/api/explain-scene/${videoId}/${scene.index}?${qs}`, {
+          method: "POST",
+        })
+          .then(async (r) => {
+            if (!r.ok) {
+              const errorText = await r.text();
+              try {
+                const errorJson = JSON.parse(errorText);
+                throw new Error(errorJson.detail || errorJson.message || errorText);
+              } catch {
+                throw new Error(errorText);
+              }
+            }
+            return r.json();
+          })
+          .then(_displayExplanation)
+          .catch((e) => {
+            explainMeta.textContent = "Error";
+            explainNarration.classList.add("hidden");
+            const errorMsg = e.message || String(e);
+            const helpMsg = errorMsg.includes("OPENAI_API_KEY")
+              ? "<p class='modal-error'><strong>API Key Required:</strong> " + errorMsg + "</p><p style='color: #9ca3af; font-size: 0.85rem;'>Set OPENAI_API_KEY in .env file or environment variable to use regenerate feature.</p>"
+              : `<p class="modal-error">${errorMsg}</p>`;
+            explainBody.innerHTML = helpMsg;
+          });
+      }
+
+      function openExplainModal(videoId, scene, frameInterval = 500) {
+        currentExplainScene = { videoId, scene, frameInterval };
         explainTitle.textContent = `Scene ${scene.index} · explanation`;
         explainMeta.textContent = "Contacting model…";
         explainBody.innerHTML =
@@ -376,37 +629,20 @@
         explainNarration.pause();
         explainNarration.removeAttribute("src");
         explainNarration.load();
-        explainNarration.classList.add("hidden");
+        summaryNarration.pause();
+        summaryNarration.removeAttribute("src");
+        summaryNarration.load();
+        summaryNarration.style.display = "none";
+        groundedNarration.pause();
+        groundedNarration.removeAttribute("src");
+        groundedNarration.load();
+        groundedNarration.style.display = "none";
+        audioSection.style.display = "none";
+        modalFrameIntervalSelect.value = String(frameInterval);
+        explainRegenerateBtn.disabled = false;
         explainModal.classList.remove("hidden");
         explainModal.setAttribute("aria-hidden", "false");
-        const qs = new URLSearchParams({ frame_interval_ms: "500" });
-        fetch(`/api/explain-scene/${videoId}/${scene.index}?${qs}`, {
-          method: "POST",
-        })
-          .then(async (r) => {
-            if (!r.ok) throw new Error(await r.text());
-            return r.json();
-          })
-          .then((data) => {
-            const parts = [];
-            if (data.cached) parts.push("From cache");
-            else if (data.frame_count != null)
-              parts.push(`${data.frame_count} frames @ ${data.frame_interval_ms}ms`);
-            if (data.explanation_audio_url) parts.push("narration ready");
-            explainMeta.textContent = parts.length ? parts.join(" · ") : "";
-            explainBody.textContent = data.explanation || "";
-            if (data.explanation_audio_url) {
-              explainNarration.src = data.explanation_audio_url;
-              explainNarration.classList.remove("hidden");
-            } else {
-              explainNarration.classList.add("hidden");
-            }
-          })
-          .catch((e) => {
-            explainMeta.textContent = "Error";
-            explainNarration.classList.add("hidden");
-            explainBody.innerHTML = `<p class="modal-error">${e.message || String(e)}</p>`;
-          });
+        _fetchExplanation(videoId, scene, frameInterval);
       }
 
       function closeTranscriptModal() {
@@ -417,6 +653,69 @@
         modalAudio.load();
         modalBody.innerHTML = "";
         modalMeta.textContent = "";
+      }
+
+      let currentTranscriptData = null;
+
+      function downloadTranscriptAsTxt() {
+        if (!currentTranscriptData) return;
+        const data = currentTranscriptData;
+        const lines = [];
+        lines.push(`Transcript - Scene ${data.scene_index}`);
+        lines.push(`Provider: ${data.provider || "unknown"}`);
+        lines.push(`Language: ${data.language || "unknown"}`);
+        lines.push("");
+
+        (data.segments || []).forEach((seg) => {
+          const timeStr = `[${seg.start.toFixed(2)}s - ${seg.end.toFixed(2)}s]`;
+          const speaker = seg.speaker ? `${seg.speaker}: ` : "";
+          const text = seg.text || "";
+          lines.push(`${timeStr} ${speaker}${text}`);
+        });
+
+        const text = lines.join("\n");
+        const blob = new Blob([text], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `scene_${data.scene_index}_${data.provider || "transcript"}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      function downloadTranscriptAsVtt() {
+        if (!currentTranscriptData) return;
+        const data = currentTranscriptData;
+        const lines = [];
+        lines.push("WEBVTT");
+        lines.push("");
+
+        (data.segments || []).forEach((seg) => {
+          const formatTime = (seconds) => {
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = seconds % 60;
+            return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${s.toFixed(3)}`;
+          };
+
+          lines.push(`${formatTime(seg.start)} --> ${formatTime(seg.end)}`);
+          const speaker = seg.speaker ? `${seg.speaker}: ` : "";
+          lines.push(`${speaker}${seg.text || ""}`);
+          lines.push("");
+        });
+
+        const vtt = lines.join("\n");
+        const blob = new Blob([vtt], { type: "text/vtt" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `scene_${data.scene_index}_${data.provider || "transcript"}.vtt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
       }
 
       function openTranscriptModal(scene) {
@@ -435,17 +734,15 @@
             return r.json();
           })
           .then((data) => {
+            currentTranscriptData = data;
             const lang =
               data.language && typeof data.language_probability === "number"
                 ? `${data.language} (${(data.language_probability * 100).toFixed(0)}% conf.)`
                 : data.language || "—";
-            let meta = `Language: ${lang}`;
+            let meta = `Provider: ${data.provider || "unknown"} · Language: ${lang}`;
             const di = data.diarization;
             if (di && di.enabled && di.speaker_count) {
-              meta += ` · ${di.speaker_count} speaker(s) auto-tagged`;
-            } else {
-              meta +=
-                " · Speaker tags off (set HF_TOKEN + install pyannote; see page hint)";
+              meta += ` · ${di.speaker_count} speaker(s)`;
             }
             modalMeta.textContent = meta;
             modalBody.innerHTML = "";
@@ -498,13 +795,199 @@
       }
 
       explainClose.addEventListener("click", closeExplainModal);
+      explainRegenerateBtn.addEventListener("click", async () => {
+        if (!currentExplainScene) return;
+        const frameInterval = parseInt(modalFrameIntervalSelect.value) || currentExplainScene.frameInterval;
+        currentExplainScene.frameInterval = frameInterval;
+        explainRegenerateBtn.disabled = true;
+
+        // Store previous content in case regeneration fails
+        const prevMeta = explainMeta.textContent;
+        const prevBody = explainBody.innerHTML;
+
+        explainMeta.textContent = "Regenerating with " + (frameInterval === 200 ? "5/s" : frameInterval === 500 ? "2/s" : frameInterval === 1000 ? "1/s" : "0.5/s") + " sampling…";
+        explainBody.innerHTML =
+          '<p class="modal-loading">Sampling frames and sending to AI… This can take up to a minute.</p>';
+        try {
+          _fetchExplanation(currentExplainScene.videoId, currentExplainScene.scene, frameInterval, true);
+        } catch (e) {
+          explainMeta.textContent = "Regeneration failed";
+          explainBody.innerHTML = `<p class="modal-error">${e.message || String(e)}</p>`;
+        } finally {
+          explainRegenerateBtn.disabled = false;
+        }
+      });
       explainModal.addEventListener("click", (e) => {
         if (e.target === explainModal) closeExplainModal();
       });
 
+      const transcriptDownloadTxtBtn = document.getElementById("transcript-download-txt");
+      const transcriptDownloadVttBtn = document.getElementById("transcript-download-vtt");
+      const fullTranscriptModal = document.getElementById("full-transcript-modal");
+      const fullTranscriptTitle = document.getElementById("full-transcript-title");
+      const fullTranscriptMeta = document.getElementById("full-transcript-meta");
+      const fullTranscriptBody = document.getElementById("full-transcript-body");
+      const fullTranscriptBtn = document.getElementById("full-transcript-btn");
+      const fullTranscriptStatus = document.getElementById("full-transcript-status");
+      const fullTranscriptClose = document.getElementById("full-transcript-close");
+      const fullTranscriptDownloadTxtBtn = document.getElementById("full-transcript-download-txt");
+      const fullTranscriptDownloadVttBtn = document.getElementById("full-transcript-download-vtt");
+
+      function closeFullTranscriptModal() {
+        fullTranscriptModal.classList.add("hidden");
+        fullTranscriptModal.setAttribute("aria-hidden", "true");
+        fullTranscriptBody.innerHTML = "";
+        fullTranscriptMeta.textContent = "";
+        currentFullTranscriptData = null;
+      }
+
+      function downloadFullTranscriptAsTxt() {
+        if (!currentFullTranscriptData) return;
+        const data = currentFullTranscriptData;
+        const lines = [];
+        lines.push("Full Video Transcript");
+        lines.push(`Provider: ${data.provider || "unknown"}`);
+        lines.push(`Language: ${data.language || "unknown"}`);
+        lines.push("");
+
+        (data.segments || []).forEach((seg) => {
+          const timeStr = `[${seg.start.toFixed(2)}s - ${seg.end.toFixed(2)}s]`;
+          const speaker = seg.speaker ? `${seg.speaker}: ` : "";
+          const text = seg.text || "";
+          lines.push(`${timeStr} ${speaker}${text}`);
+        });
+
+        const text = lines.join("\n");
+        const blob = new Blob([text], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `full_video_${data.provider || "transcript"}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      function downloadFullTranscriptAsVtt() {
+        if (!currentFullTranscriptData) return;
+        const data = currentFullTranscriptData;
+        const lines = [];
+        lines.push("WEBVTT");
+        lines.push("");
+
+        (data.segments || []).forEach((seg) => {
+          const formatTime = (seconds) => {
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = seconds % 60;
+            return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${s.toFixed(3)}`;
+          };
+
+          lines.push(`${formatTime(seg.start)} --> ${formatTime(seg.end)}`);
+          const speaker = seg.speaker ? `${seg.speaker}: ` : "";
+          lines.push(`${speaker}${seg.text || ""}`);
+          lines.push("");
+        });
+
+        const vtt = lines.join("\n");
+        const blob = new Blob([vtt], { type: "text/vtt" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `full_video_${data.provider || "transcript"}.vtt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      function openFullTranscriptModal(videoId) {
+        fullTranscriptTitle.textContent = "Full Video Transcript";
+        fullTranscriptMeta.textContent = "";
+        fullTranscriptBody.innerHTML = '<p class="modal-loading">Loading full transcript…</p>';
+        fullTranscriptModal.classList.remove("hidden");
+        fullTranscriptModal.setAttribute("aria-hidden", "false");
+
+        fetch(`/api/transcript/${videoId}/full-video`)
+          .then(async (r) => {
+            if (!r.ok) {
+              if (r.status === 404) throw new Error("No full transcript available. Process a video first.");
+              throw new Error(await r.text());
+            }
+            return r.json();
+          })
+          .then((data) => {
+            currentFullTranscriptData = data;
+            const lang =
+              data.language && typeof data.language_probability === "number"
+                ? `${data.language} (${(data.language_probability * 100).toFixed(0)}% conf.)`
+                : data.language || "—";
+            let meta = `Provider: ${data.provider || "unknown"} · Language: ${lang}`;
+            const di = data.diarization;
+            if (di && di.enabled && di.speaker_count) {
+              meta += ` · ${di.speaker_count} speaker(s)`;
+            }
+            fullTranscriptMeta.textContent = meta;
+            fullTranscriptBody.innerHTML = "";
+            const segs = data.segments || [];
+            if (!segs.length) {
+              fullTranscriptBody.innerHTML = '<p class="modal-loading">No segments in transcript.</p>';
+              return;
+            }
+            segs.forEach((seg) => {
+              const wrap = document.createElement("div");
+              wrap.className = "transcript-seg";
+              const time = document.createElement("div");
+              time.className = "transcript-time";
+              time.textContent = fmtRange(seg.start, seg.end);
+              wrap.appendChild(time);
+              if (seg.speaker) {
+                const badge = document.createElement("div");
+                badge.className = "speaker-badge";
+                badge.textContent = seg.speaker;
+                wrap.appendChild(badge);
+              }
+              if (seg.words && seg.words.length) {
+                const line = document.createElement("div");
+                line.className = "transcript-text";
+                seg.words.forEach((w) => {
+                  const sp = document.createElement("span");
+                  sp.className = "transcript-word";
+                  sp.textContent = w.word + " ";
+                  sp.title = `${w.start.toFixed(2)}s`;
+                  line.appendChild(sp);
+                });
+                wrap.appendChild(line);
+              } else {
+                const line = document.createElement("div");
+                line.className = "transcript-text";
+                line.textContent = seg.text || "";
+                wrap.appendChild(line);
+              }
+              fullTranscriptBody.appendChild(wrap);
+            });
+          })
+          .catch((e) => {
+            fullTranscriptBody.innerHTML = `<p class="modal-error">${e.message || String(e)}</p>`;
+          });
+      }
+
       modalClose.addEventListener("click", closeTranscriptModal);
+      transcriptDownloadTxtBtn.addEventListener("click", downloadTranscriptAsTxt);
+      transcriptDownloadVttBtn.addEventListener("click", downloadTranscriptAsVtt);
       transcriptModal.addEventListener("click", (e) => {
         if (e.target === transcriptModal) closeTranscriptModal();
+      });
+
+      fullTranscriptClose.addEventListener("click", closeFullTranscriptModal);
+      fullTranscriptDownloadTxtBtn.addEventListener("click", downloadFullTranscriptAsTxt);
+      fullTranscriptDownloadVttBtn.addEventListener("click", downloadFullTranscriptAsVtt);
+      fullTranscriptModal.addEventListener("click", (e) => {
+        if (e.target === fullTranscriptModal) closeFullTranscriptModal();
+      });
+      fullTranscriptBtn.addEventListener("click", () => {
+        if (uploadedId) openFullTranscriptModal(uploadedId);
       });
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
@@ -554,6 +1037,8 @@
         scenesEl.innerHTML = "";
         processBtn.disabled = true;
         uploadedId = null;
+        fullTranscriptBtn.style.display = "none";
+        fullTranscriptStatus.textContent = "";
         try {
           setStatus("Uploading…");
           const fd = new FormData();
@@ -570,12 +1055,15 @@
             1,
             Math.min(50, parseInt(mergeInput.value, 10) || 3),
           );
+          const selectedProvider = document.querySelector('input[name="transcription-provider"]:checked').value;
           const res = await fetch(
-            `/api/process/${uploadedId}?shots_per_scene=${n}`,
+            `/api/process/${uploadedId}?shots_per_scene=${n}&provider=${selectedProvider}`,
             { method: "POST" },
           );
           if (!res.ok) throw new Error(await res.text());
           const data = await res.json();
+          fullTranscriptBtn.style.display = "block";
+          fullTranscriptStatus.textContent = "Full transcript available";
           setStatus(
             `Done — ${data.shots.length} shot(s), ${data.scenes.length} scene(s) (≤${data.shots_per_scene} shots each).`,
           );
@@ -608,13 +1096,32 @@
               tbtn.addEventListener("click", () => openTranscriptModal(c));
               actions.appendChild(tbtn);
             }
+
+            // Frame interval selector
+            const frameIntervalDiv = document.createElement("div");
+            frameIntervalDiv.className = "frame-interval-selector";
+            const frameLabel = document.createElement("label");
+            frameLabel.textContent = "Frames/sec:";
+            frameLabel.style.marginRight = "0.2rem";
+            const frameSelect = document.createElement("select");
+            frameSelect.innerHTML = `
+              <option value="200" title="5 frames/sec - most detailed">5/s</option>
+              <option value="500" title="2 frames/sec - balanced" selected>2/s</option>
+              <option value="1000" title="1 frame/sec - faster">1/s</option>
+              <option value="2000" title="0.5 frames/sec - minimal">0.5/s</option>
+            `;
+            frameIntervalDiv.appendChild(frameLabel);
+            frameIntervalDiv.appendChild(frameSelect);
+            actions.appendChild(frameIntervalDiv);
+
             const ebtn = document.createElement("button");
             ebtn.type = "button";
             ebtn.className = "secondary";
             ebtn.textContent = "Explain scene";
             ebtn.addEventListener("click", () => {
               if (!uploadedId) return;
-              openExplainModal(uploadedId, c);
+              const frameInterval = parseInt(frameSelect.value);
+              openExplainModal(uploadedId, c, frameInterval);
             });
             actions.appendChild(ebtn);
             head.appendChild(actions);
@@ -650,6 +1157,138 @@
           if (!fileInput.files[0]) processBtn.disabled = true;
         }
       });
+
+      clearBtn.addEventListener("click", async () => {
+        if (!confirm("Delete all generated scenes and explanations? This cannot be undone.")) {
+          return;
+        }
+        clearBtn.disabled = true;
+        try {
+          setStatus("Clearing all generated scenes…");
+          const res = await fetch("/api/clear", { method: "POST" });
+          if (!res.ok) throw new Error(await res.text());
+          shotsEl.innerHTML = "";
+          scenesEl.innerHTML = "";
+          uploadedId = null;
+          fileInput.value = "";
+          fullTranscriptBtn.style.display = "none";
+          fullTranscriptStatus.textContent = "";
+          setStatus("All generated scenes cleared.");
+        } catch (e) {
+          setStatus(uploadErrorHint(e), true);
+        } finally {
+          clearBtn.disabled = false;
+        }
+      });
+
+      function addShotElement(shot) {
+        const div = document.createElement("div");
+        div.className = "clip";
+        div.innerHTML = `
+          <header>Shot ${shot.index}</header>
+          <video src="${shot.url}" controls playsinline></video>
+        `;
+        shotsEl.appendChild(div);
+      }
+
+      function addSceneElement(videoId, scene) {
+        const wrap = document.createElement("div");
+        wrap.className = "clip scene-clip";
+
+        const head = document.createElement("div");
+        head.className = "scene-clip-head";
+        const h = document.createElement("header");
+        h.textContent = `Scene ${scene.index}`;
+        head.appendChild(h);
+        const actions = document.createElement("div");
+        actions.className = "scene-clip-actions";
+        if (scene.transcript_url && scene.audio_url) {
+          const tbtn = document.createElement("button");
+          tbtn.type = "button";
+          tbtn.className = "secondary";
+          tbtn.textContent = "Transcript";
+          tbtn.addEventListener("click", () => openTranscriptModal(scene));
+          actions.appendChild(tbtn);
+        }
+
+        // Frame interval selector
+        const frameIntervalDiv = document.createElement("div");
+        frameIntervalDiv.className = "frame-interval-selector";
+        const frameLabel = document.createElement("label");
+        frameLabel.textContent = "Frames/sec:";
+        frameLabel.style.marginRight = "0.2rem";
+        const frameSelect = document.createElement("select");
+        frameSelect.innerHTML = `
+          <option value="200" title="5 frames/sec - most detailed">5/s</option>
+          <option value="500" title="2 frames/sec - balanced" selected>2/s</option>
+          <option value="1000" title="1 frame/sec - faster">1/s</option>
+          <option value="2000" title="0.5 frames/sec - minimal">0.5/s</option>
+        `;
+        frameIntervalDiv.appendChild(frameLabel);
+        frameIntervalDiv.appendChild(frameSelect);
+        actions.appendChild(frameIntervalDiv);
+
+        const ebtn = document.createElement("button");
+        ebtn.type = "button";
+        ebtn.className = "secondary";
+        ebtn.textContent = "Explain scene";
+        ebtn.addEventListener("click", () => {
+          const frameInterval = parseInt(frameSelect.value);
+          openExplainModal(videoId, scene, frameInterval);
+        });
+        actions.appendChild(ebtn);
+        head.appendChild(actions);
+        wrap.appendChild(head);
+
+        const video = document.createElement("video");
+        video.src = scene.url;
+        video.controls = true;
+        video.setAttribute("playsinline", "");
+        wrap.appendChild(video);
+
+        if (scene.audio_url) {
+          const aud = document.createElement("audio");
+          aud.className = "scene-audio";
+          aud.src = scene.audio_url;
+          aud.controls = true;
+          aud.preload = "metadata";
+          wrap.appendChild(aud);
+        } else {
+          const p = document.createElement("p");
+          p.className = "no-audio";
+          p.textContent = "No audio track for this scene (source may be silent).";
+          wrap.appendChild(p);
+        }
+
+        scenesEl.appendChild(wrap);
+      }
+
+      async function loadPreviousOutputs() {
+        try {
+          const res = await fetch("/api/list-outputs");
+          if (!res.ok) return;
+          const data = await res.json();
+          const videos = data.videos || [];
+
+          if (videos.length === 0) {
+            setStatus("Ready. Select a video to process.");
+            return;
+          }
+
+          videos.forEach((video) => {
+            video.shots.forEach((shot) => addShotElement(shot));
+            video.scenes.forEach((scene) => addSceneElement(video.video_id, scene));
+          });
+
+          const shotCount = videos.reduce((sum, v) => sum + v.shots.length, 0);
+          const sceneCount = videos.reduce((sum, v) => sum + v.scenes.length, 0);
+          setStatus(`Loaded ${shotCount} shot(s), ${sceneCount} scene(s) from previous sessions.`);
+        } catch (e) {
+          setStatus("Ready. Select a video to process.");
+        }
+      }
+
+      loadPreviousOutputs();
     </script>
   </body>
 </html>

@@ -6,8 +6,14 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
 
 from dotenv import load_dotenv
+
+# Load .env BEFORE importing config, so environment variables are available
+ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env")
+
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -17,19 +23,15 @@ from scenedetect.detectors import ContentDetector
 
 import requests
 
-
-SCENE_EXPLAIN_SYSTEM_PROMPT = """You are a film and media analyst helping viewers understand a scene.
-
-Work in two clear mental steps:
-1) First, read the **full-film transcript** (all scenes’ dialogue together). Build a loose sense of ongoing story, tone, and recurring themes—only as far as the text supports.
-2) Then focus on **this scene only**, using:
-   - The **scene-specific transcript** (dialogue and speakers if tagged),
-   - The **video frames** provided in order (each from a moment in the scene). From the frames, infer **setting, action, blocking, cinematography**, and **facial/body language** to reason about **mood and emotion** (e.g. tension, joy, fear). Be honest when unclear.
-
-Your task: write a clear **scene explanation** for the user—what is happening, why it matters in context, and how it feels emotionally. When you infer emotion from visuals, say what you see (expressions, posture, staging) that supports it. Do not invent plot facts that contradict the transcripts; do not name actors unless they appear in the text."""
-
-ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
+from app import config
+from app.prompts import (
+    SCENE_EXPLAIN_SYSTEM_PROMPT,
+    SCENE_SUMMARY_SYSTEM_PROMPT,
+    SCENE_GROUNDED_SUMMARY_SYSTEM_PROMPT,
+    build_scene_explain_user_text,
+    build_scene_summary_user_text,
+    build_scene_grounded_summary_user_text,
+)
 
 UPLOADS = ROOT / "uploads"
 OUTPUTS = ROOT / "outputs"
@@ -39,28 +41,28 @@ UPLOADS.mkdir(parents=True, exist_ok=True)
 OUTPUTS.mkdir(parents=True, exist_ok=True)
 
 _whisper_model = None
-_whisper_model_name: str | None = None
+_whisper_model_name: Optional[str] = None
 
 
 def _get_whisper_model():  # pragma: no cover — loads ML weights on first use
     global _whisper_model, _whisper_model_name
-    model_name = os.environ.get("WHISPER_MODEL", "base")
+    model_name = config.WHISPER_MODEL
     if _whisper_model is not None and _whisper_model_name == model_name:
         return _whisper_model
     from faster_whisper import WhisperModel
 
-    device = os.environ.get("WHISPER_DEVICE", "cpu")
+    device = config.WHISPER_DEVICE
     compute = (
-        os.environ.get("WHISPER_COMPUTE", "float16")
+        config.WHISPER_COMPUTE_TYPE_GPU
         if device == "cuda"
-        else os.environ.get("WHISPER_COMPUTE", "int8")
+        else config.WHISPER_COMPUTE_TYPE_CPU
     )
     _whisper_model = WhisperModel(model_name, device=device, compute_type=compute)
     _whisper_model_name = model_name
     return _whisper_model
 
 
-def _which_ffmpeg() -> str | None:
+def _which_ffmpeg() -> Optional[str]:
     return shutil.which("ffmpeg")
 
 
@@ -87,10 +89,10 @@ def _audio_to_wav16k_mono(ffmpeg: str, src: Path, dst: Path) -> None:
 
 
 def _human_speaker_labels(
-    turns: list[tuple[float, float, str]],
-) -> dict[str, str]:
-    ordered: list[str] = []
-    seen: set[str] = set()
+    turns: List[Tuple[float, float, str]],
+) -> Dict[str, str]:
+    ordered: List[str] = []
+    seen: Set[str] = set()
     for _a, _b, raw in turns:
         if raw not in seen:
             seen.add(raw)
@@ -101,10 +103,10 @@ def _human_speaker_labels(
 def _best_speaker_for_segment(
     seg_start: float,
     seg_end: float,
-    turns: list[tuple[float, float, str]],
-    label_map: dict[str, str],
-) -> str | None:
-    best_raw: str | None = None
+    turns: List[Tuple[float, float, str]],
+    label_map: Dict[str, str],
+) -> Optional[str]:
+    best_raw: Optional[str] = None
     best_ov = 0.0
     for t0, t1, raw in turns:
         overlap = max(0.0, min(seg_end, t1) - max(seg_start, t0))
@@ -116,7 +118,7 @@ def _best_speaker_for_segment(
     return label_map.get(best_raw)
 
 
-def _diarize_speakers(wav_path: Path) -> list[tuple[float, float, str]] | None:
+def _diarize_speakers(wav_path: Path) -> Optional[List[Tuple[float, float, str]]]:
     token = (
         os.environ.get("HF_TOKEN")
         or os.environ.get("HUGGINGFACE_HUB_TOKEN")
@@ -145,7 +147,7 @@ def _diarize_speakers(wav_path: Path) -> list[tuple[float, float, str]] | None:
         diarization = pipeline(str(wav_path))
     except Exception:
         return None
-    rows: list[tuple[float, float, str]] = []
+    rows: List[Tuple[float, float, str]] = []
     for turn, _track, speaker in diarization.itertracks(yield_label=True):
         rows.append((float(turn.start), float(turn.end), str(speaker)))
     return rows if rows else None
@@ -154,10 +156,10 @@ def _diarize_speakers(wav_path: Path) -> list[tuple[float, float, str]] | None:
 def _transcribe_audio_file(
     audio_path: Path,
     *,
-    ffmpeg: str | None,
+    ffmpeg: Optional[str],
 ) -> dict:
-    turns: list[tuple[float, float, str]] | None = None
-    label_map: dict[str, str] = {}
+    turns: Optional[List[Tuple[float, float, str]]] = None
+    label_map: Dict[str, str] = {}
     diar_meta: dict = {
         "enabled": False,
         "speaker_count": 0,
@@ -196,11 +198,11 @@ def _transcribe_audio_file(
         word_timestamps=True,
         vad_filter=True,
     )
-    segments_out: list[dict] = []
-    full_parts: list[str] = []
+    segments_out: List[Dict] = []
+    full_parts: List[str] = []
     for seg in segments_iter:
-        words_out: list[dict] = []
-        speaker_label: str | None = None
+        words_out: List[Dict] = []
+        speaker_label: Optional[str] = None
         if turns:
             speaker_label = _best_speaker_for_segment(
                 seg.start,
@@ -293,7 +295,7 @@ def _detect_shots(video_path: Path) -> list[tuple[float, float]]:
     """Shot boundaries from PySceneDetect: each tuple is (start_sec, end_sec) for one shot."""
     video = open_video(str(video_path))
     manager = SceneManager()
-    manager.add_detector(ContentDetector())
+    manager.add_detector(ContentDetector(threshold=config.SCENE_DETECTION_THRESHOLD))
     manager.detect_scenes(video)
     scenes = manager.get_scene_list()
     out: list[tuple[float, float]] = []
@@ -319,7 +321,7 @@ def _split_clip(
     # Re-encode (not stream copy) so cuts match the detected timestamps. With -c copy,
     # FFmpeg aligns to keyframes and the file often starts at an earlier keyframe —
     # players then show black or junk for seconds until the next keyframe.
-    cmd: list[str] = [
+    cmd: List[str] = [
         ffmpeg,
         "-hide_banner",
         "-loglevel",
@@ -351,9 +353,9 @@ def _split_clip(
 
 
 def _chunk_shots(
-    shots: list[tuple[float, float]],
+    shots: List[Tuple[float, float]],
     shots_per_scene: int,
-) -> list[list[tuple[float, float]]]:
+) -> List[List[Tuple[float, float]]]:
     if shots_per_scene < 1:
         raise ValueError("shots_per_scene must be >= 1")
     return [shots[i : i + shots_per_scene] for i in range(0, len(shots), shots_per_scene)]
@@ -361,7 +363,7 @@ def _chunk_shots(
 
 def _concat_shot_files(
     ffmpeg: str,
-    shot_paths: list[Path],
+    shot_paths: List[Path],
     out_path: Path,
 ) -> None:
     if not shot_paths:
@@ -429,7 +431,7 @@ def _extract_scene_audio(
     subprocess.run(cmd, check=True)
 
 
-def _transcript_paths_sorted(transcripts_dir: Path) -> list[Path]:
+def _transcript_paths_sorted(transcripts_dir: Path) -> List[Path]:
     files = list(transcripts_dir.glob("scene_*.json"))
 
     def sort_key(p: Path) -> int:
@@ -442,7 +444,7 @@ def _transcript_paths_sorted(transcripts_dir: Path) -> list[Path]:
 
 
 def _build_full_transcript_context(transcripts_dir: Path, max_chars: int) -> str:
-    parts: list[str] = []
+    parts: List[str] = []
     for p in _transcript_paths_sorted(transcripts_dir):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -472,7 +474,7 @@ def _build_full_transcript_context(transcripts_dir: Path, max_chars: int) -> str
     return full[: max_chars - 30] + "\n\n[… transcript truncated …]"
 
 
-def _scene_transcript_block(transcript_path: Path | None) -> str:
+def _scene_transcript_block(transcript_path: Optional[Path]) -> str:
     if transcript_path is None or not transcript_path.is_file():
         return "(No transcript available for this scene.)"
     try:
@@ -480,7 +482,7 @@ def _scene_transcript_block(transcript_path: Path | None) -> str:
     except (OSError, json.JSONDecodeError):
         return "(Transcript file could not be read.)"
     segs = data.get("segments") or []
-    lines: list[str] = []
+    lines: List[str] = []
     for s in segs:
         t = (s.get("text") or "").strip()
         if not t:
@@ -502,7 +504,7 @@ def _extract_scene_frames_jpeg(
     *,
     interval_ms: int,
     max_frames: int,
-) -> list[tuple[float, Path]]:
+) -> List[Tuple[float, Path]]:
     out_dir.mkdir(parents=True, exist_ok=True)
     fps = 1000.0 / float(max(200, min(interval_ms, 5000)))
     pattern = str(out_dir / "frame_%04d.jpg")
@@ -524,7 +526,7 @@ def _extract_scene_frames_jpeg(
         check=True,
     )
     files = sorted(out_dir.glob("frame_*.jpg"))
-    out: list[tuple[float, Path]] = []
+    out: List[Tuple[float, Path]] = []
     step_s = interval_ms / 1000.0
     for i, p in enumerate(files):
         out.append((i * step_s, p))
@@ -566,12 +568,12 @@ def _openai_explain_scene(
     base_url: str,
     api_key: str,
     model: str,
-    user_content: list[dict],
+    user_content: List[Dict],
 ) -> str:
     url = f"{base_url.rstrip('/')}/chat/completions"
     payload = {
         "model": model,
-        "max_tokens": int(os.environ.get("OPENAI_EXPLAIN_MAX_TOKENS", "1200")),
+        "max_tokens": config.OPENAI_EXPLAIN_MAX_TOKENS,
         "messages": [
             {"role": "system", "content": SCENE_EXPLAIN_SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
@@ -584,7 +586,7 @@ def _openai_explain_scene(
             "Content-Type": "application/json",
         },
         json=payload,
-        timeout=int(os.environ.get("OPENAI_EXPLAIN_TIMEOUT", "120")),
+        timeout=config.OPENAI_EXPLAIN_TIMEOUT,
     )
     if not r.ok:
         raise RuntimeError(r.text)
@@ -596,8 +598,183 @@ def _openai_explain_scene(
     return (msg.get("content") or "").strip()
 
 
+def _get_scene_duration_seconds(
+    transcript_path: Optional[Path],
+    video_path: Path,
+) -> Optional[float]:
+    """Extract scene duration from transcript metadata, or from video file.
+
+    Prefers transcript metadata (already computed, no file I/O). Falls back to
+    probing the video file if transcript doesn't contain timeline information.
+
+    Args:
+        transcript_path: Path to scene_NNN.json (contains timeline_in_source_video)
+        video_path: Path to scene_NNN.mp4 (fallback if transcript unavailable)
+
+    Returns:
+        Duration in seconds (rounded to 3 decimals), or None if unavailable
+    """
+    if transcript_path and transcript_path.is_file():
+        try:
+            data = json.loads(transcript_path.read_text(encoding="utf-8"))
+            timeline = data.get("timeline_in_source_video")
+            if timeline and "start" in timeline and "end" in timeline:
+                return round(timeline["end"] - timeline["start"], 3)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    if video_path.is_file():
+        duration = _probe_duration_seconds(video_path)
+        return duration if duration > 0 else None
+
+    return None
+
+
+def _openai_summarize_explanation(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    explanation_text: str,
+    duration_seconds: float,
+) -> str:
+    """Generate a time-constrained summary of a scene explanation.
+
+    Summarizes the explanation to fit within the scene's audio duration,
+    calculated at ~150 words per minute (2.3 words/second for natural pacing).
+
+    Args:
+        base_url: OpenAI API base URL
+        api_key: OpenAI API key
+        model: Model to use for summarization
+        explanation_text: Full explanation to summarize
+        duration_seconds: Audio duration constraint (in seconds)
+
+    Returns:
+        Summarized explanation text
+
+    Raises:
+        RuntimeError: If API request fails
+    """
+    target_words = max(
+        config.SUMMARY_MIN_WORDS,
+        int(duration_seconds * config.SUMMARY_WORDS_PER_SECOND),
+    )
+    target_words = min(target_words, config.SUMMARY_MAX_WORDS)
+
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    payload = {
+        "model": model,
+        "max_tokens": config.OPENAI_SUMMARY_MAX_TOKENS,
+        "messages": [
+            {"role": "system", "content": SCENE_SUMMARY_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": build_scene_summary_user_text(
+                    explanation=explanation_text,
+                    duration_seconds=duration_seconds,
+                    target_word_count=target_words,
+                ),
+            },
+        ],
+    }
+
+    r = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=config.OPENAI_SUMMARY_TIMEOUT,
+    )
+    if not r.ok:
+        raise RuntimeError(r.text)
+
+    data = r.json()
+    choices = data.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"No choices in summary response: {data}")
+
+    msg = choices[0].get("message") or {}
+    return (msg.get("content") or "").strip()
+
+
+def _openai_generate_grounded_summary(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    explanation_text: str,
+    scene_transcript: str,
+    duration_seconds: float,
+) -> str:
+    """Generate a grounded summary using actual words from the scene transcript.
+
+    Creates a conversational summary that uses at least 50% of its words from the
+    actual video transcript, as if a friend is narrating what happened.
+
+    Args:
+        base_url: OpenAI API base URL
+        api_key: OpenAI API key
+        model: Model to use for summarization
+        explanation_text: Full explanation (for context)
+        scene_transcript: Actual dialogue from the scene (for word grounding)
+        duration_seconds: Audio duration constraint (in seconds)
+
+    Returns:
+        Grounded summary text using actual transcript words
+
+    Raises:
+        RuntimeError: If API request fails
+    """
+    target_words = max(
+        config.SUMMARY_MIN_WORDS,
+        int(duration_seconds * config.SUMMARY_WORDS_PER_SECOND),
+    )
+    target_words = min(target_words, config.SUMMARY_MAX_WORDS)
+
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    payload = {
+        "model": model,
+        "max_tokens": config.OPENAI_GROUNDED_SUMMARY_MAX_TOKENS,
+        "messages": [
+            {"role": "system", "content": SCENE_GROUNDED_SUMMARY_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": build_scene_grounded_summary_user_text(
+                    explanation=explanation_text,
+                    scene_transcript=scene_transcript,
+                    duration_seconds=duration_seconds,
+                    target_word_count=target_words,
+                ),
+            },
+        ],
+    }
+
+    r = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=config.OPENAI_GROUNDED_SUMMARY_TIMEOUT,
+    )
+    if not r.ok:
+        raise RuntimeError(r.text)
+
+    data = r.json()
+    choices = data.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"No choices in grounded summary response: {data}")
+
+    msg = choices[0].get("message") or {}
+    return (msg.get("content") or "").strip()
+
+
 def _tts_input_clip(text: str) -> str:
-    limit = int(os.environ.get("OPENAI_TTS_MAX_INPUT_CHARS", "4096"))
+    limit = config.OPENAI_TTS_MAX_INPUT_CHARS
     t = text.strip()
     if len(t) <= limit:
         return t
@@ -611,12 +788,10 @@ def _openai_tts_to_mp3(
     text: str,
     out_path: Path,
 ) -> None:
-    model = os.environ.get("OPENAI_TTS_MODEL", "tts-1")
-    voice = os.environ.get("OPENAI_TTS_VOICE", "alloy")
     url = f"{base_url.rstrip('/')}/audio/speech"
     payload = {
-        "model": model,
-        "voice": voice,
+        "model": config.OPENAI_TTS_MODEL,
+        "voice": config.OPENAI_TTS_VOICE,
         "input": _tts_input_clip(text),
         "response_format": "mp3",
     }
@@ -627,7 +802,7 @@ def _openai_tts_to_mp3(
             "Content-Type": "application/json",
         },
         json=payload,
-        timeout=int(os.environ.get("OPENAI_TTS_TIMEOUT", "120")),
+        timeout=config.OPENAI_TTS_TIMEOUT,
     )
     if not r.ok:
         raise RuntimeError(r.text)
@@ -695,7 +870,11 @@ async def upload(file: UploadFile = File(...)):
 @app.post("/api/process/{video_id}")
 def process(
     video_id: str,
-    shots_per_scene: int = Query(default=3, ge=1, le=50),
+    shots_per_scene: int = Query(
+        default=config.DEFAULT_SHOTS_PER_SCENE,
+        ge=config.MIN_SHOTS_PER_SCENE,
+        le=config.MAX_SHOTS_PER_SCENE,
+    ),
 ):
     ffmpeg = _which_ffmpeg()
     if not ffmpeg:
@@ -740,8 +919,8 @@ def process(
 
     has_audio = _has_audio_stream(video_path)
 
-    shot_entries: list[dict] = []
-    shot_paths_ordered: list[Path] = []
+    shot_entries: List[Dict] = []
+    shot_paths_ordered: List[Path] = []
 
     for i, (start_s, end_s) in enumerate(ranges, start=1):
         clip_name = f"shot_{i:03d}.mp4"
@@ -774,7 +953,7 @@ def process(
         )
 
     scene_groups = _chunk_shots(ranges, shots_per_scene)
-    scene_entries: list[dict] = []
+    scene_entries: List[Dict] = []
     shot_offset = 0
 
     for si, group in enumerate(scene_groups, start=1):
@@ -856,6 +1035,86 @@ def process(
     }
 
 
+@app.get("/api/list-outputs")
+def list_outputs():
+    """List all previously generated videos and their outputs."""
+    if not OUTPUTS.is_dir():
+        return JSONResponse({"videos": []})
+
+    videos = []
+    for video_dir in sorted(OUTPUTS.iterdir()):
+        if not video_dir.is_dir():
+            continue
+
+        video_id = video_dir.name
+        shots_dir = video_dir / "shots"
+        scenes_dir = video_dir / "scenes"
+
+        shots = []
+        scenes = []
+
+        if shots_dir.is_dir():
+            for shot_file in sorted(shots_dir.glob("shot_*.mp4")):
+                match = shot_file.stem.split("_")
+                if len(match) >= 2 and match[1].isdigit():
+                    idx = int(match[1])
+                    shots.append({
+                        "index": idx,
+                        "url": f"/api/clips/{video_id}/shots/{shot_file.name}",
+                    })
+
+        if scenes_dir.is_dir():
+            for scene_file in sorted(scenes_dir.glob("scene_*.mp4")):
+                match = scene_file.stem.split("_")
+                if len(match) >= 2 and match[1].isdigit():
+                    idx = int(match[1])
+                    scene_audio_name = f"scene_{idx:03d}.mp3"
+                    audio_path = video_dir / "scene_audio" / scene_audio_name
+
+                    audio_url = None
+                    if audio_path.is_file():
+                        audio_url = f"/api/clips/{video_id}/scene_audio/{scene_audio_name}"
+
+                    transcript_name = f"scene_{idx:03d}.json"
+                    transcript_path = video_dir / "transcripts" / transcript_name
+
+                    transcript_url = None
+                    if transcript_path.is_file():
+                        transcript_url = f"/api/transcript/{video_id}/{transcript_name}"
+
+                    scenes.append({
+                        "index": idx,
+                        "url": f"/api/clips/{video_id}/scenes/{scene_file.name}",
+                        "audio_url": audio_url,
+                        "transcript_url": transcript_url,
+                    })
+
+        if shots or scenes:
+            videos.append({
+                "video_id": video_id,
+                "shots": shots,
+                "scenes": scenes,
+            })
+
+    return JSONResponse({"videos": videos})
+
+
+@app.post("/api/clear")
+def clear_all():
+    """Delete all generated outputs (scenes, shots, transcripts, explanations)."""
+    if OUTPUTS.is_dir():
+        try:
+            shutil.rmtree(OUTPUTS)
+            OUTPUTS.mkdir(parents=True, exist_ok=True)
+            return JSONResponse({"status": "ok", "message": "All outputs cleared"})
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to clear outputs: {e}",
+            )
+    return JSONResponse({"status": "ok", "message": "No outputs to clear"})
+
+
 @app.get("/api/transcript/{video_id}/{filename}")
 def get_transcript(video_id: str, filename: str):
     safe = Path(filename).name
@@ -880,7 +1139,11 @@ def get_transcript(video_id: str, filename: str):
 def explain_scene(
     video_id: str,
     scene_index: int,
-    frame_interval_ms: int = Query(default=500, ge=200, le=4000),
+    frame_interval_ms: int = Query(
+        default=config.EXPLAIN_FRAME_INTERVAL_MS_DEFAULT,
+        ge=config.EXPLAIN_FRAME_INTERVAL_MS_MIN,
+        le=config.EXPLAIN_FRAME_INTERVAL_MS_MAX,
+    ),
     regenerate: bool = Query(default=False),
 ):
     if scene_index < 1:
@@ -896,12 +1159,30 @@ def explain_scene(
     audio_name = f"scene_{scene_index:03d}.mp3"
     audio_path = explanations_dir / audio_name
 
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    api_key = config.OPENAI_API_KEY
+    base_url = config.OPENAI_BASE_URL
 
     if cache_path.is_file() and not regenerate:
         explanation_text = cache_path.read_text(encoding="utf-8")
-        audio_url: str | None = None
+
+        summary_cache_path = explanations_dir / f"scene_{scene_index:03d}_summary.txt"
+        summary_text = None
+        if summary_cache_path.is_file():
+            summary_text = summary_cache_path.read_text(encoding="utf-8")
+
+        grounded_cache_path = explanations_dir / f"scene_{scene_index:03d}_grounded.txt"
+        grounded_summary_text = None
+        if grounded_cache_path.is_file():
+            grounded_summary_text = grounded_cache_path.read_text(encoding="utf-8")
+
+        transcripts_dir = session / "transcripts"
+        tp = transcripts_dir / f"scene_{scene_index:03d}.json"
+        duration_seconds = _get_scene_duration_seconds(
+            tp if tp.is_file() else None,
+            scene_mp4,
+        )
+
+        explanation_audio_url: Optional[str] = None
         if api_key and not audio_path.is_file():
             _try_write_explanation_narration(
                 base_url=base_url,
@@ -910,13 +1191,55 @@ def explain_scene(
                 mp3_path=audio_path,
             )
         if audio_path.is_file():
-            audio_url = f"/api/explanations/{video_id}/{audio_name}"
+            explanation_audio_url = f"/api/explanations/{video_id}/{audio_name}"
+
+        summary_audio_url: Optional[str] = None
+        summary_audio_name = f"scene_{scene_index:03d}_summary.mp3"
+        summary_audio_path = explanations_dir / summary_audio_name
+
+        if summary_text and api_key and not summary_audio_path.is_file():
+            try:
+                _openai_tts_to_mp3(
+                    base_url=base_url,
+                    api_key=api_key,
+                    text=summary_text,
+                    out_path=summary_audio_path,
+                )
+            except Exception:
+                pass
+
+        if summary_audio_path.is_file():
+            summary_audio_url = f"/api/explanations/{video_id}/{summary_audio_name}"
+
+        grounded_audio_url: Optional[str] = None
+        grounded_audio_name = f"scene_{scene_index:03d}_grounded.mp3"
+        grounded_audio_path = explanations_dir / grounded_audio_name
+
+        if grounded_summary_text and api_key and not grounded_audio_path.is_file():
+            try:
+                _openai_tts_to_mp3(
+                    base_url=base_url,
+                    api_key=api_key,
+                    text=grounded_summary_text,
+                    out_path=grounded_audio_path,
+                )
+            except Exception:
+                pass
+
+        if grounded_audio_path.is_file():
+            grounded_audio_url = f"/api/explanations/{video_id}/{grounded_audio_name}"
+
         return JSONResponse(
             {
                 "explanation": explanation_text,
+                "summary": summary_text,
+                "grounded_summary": grounded_summary_text,
+                "duration_seconds": duration_seconds,
                 "cached": True,
                 "scene_index": scene_index,
-                "explanation_audio_url": audio_url,
+                "explanation_audio_url": explanation_audio_url,
+                "summary_audio_url": summary_audio_url,
+                "grounded_summary_audio_url": grounded_audio_url,
             },
         )
 
@@ -933,9 +1256,9 @@ def explain_scene(
             detail="ffmpeg not found on PATH",
         )
 
-    model = os.environ.get("OPENAI_EXPLAIN_MODEL", "gpt-4o-mini")
-    max_frames = int(os.environ.get("EXPLAIN_MAX_FRAMES", "18"))
-    max_context = int(os.environ.get("EXPLAIN_FULL_TRANSCRIPT_MAX_CHARS", "16000"))
+    model = config.OPENAI_EXPLAIN_MODEL
+    max_frames = config.EXPLAIN_MAX_FRAMES
+    max_context = config.EXPLAIN_FULL_TRANSCRIPT_MAX_CHARS
 
     transcripts_dir = session / "transcripts"
     full_text = (
@@ -962,22 +1285,18 @@ def explain_scene(
                 detail="Could not extract frames from scene video",
             )
 
-        user_content: list[dict] = [
+        user_content: List[Dict] = [
             {
                 "type": "text",
-                "text": (
-                    "## Full video transcript (all scenes — context)\n\n"
-                    f"{full_text}\n\n"
-                    "## This scene — transcript (focus)\n\n"
-                    f"{scene_txt}\n\n"
-                    "## Video frames\n\n"
-                    f"There are {len(frames)} still images, sampled about every "
-                    f"{frame_interval_ms} ms through this scene, in order. Use them for "
-                    "setting, action, faces, body language, and emotional tone."
+                "text": build_scene_explain_user_text(
+                    full_transcript=full_text,
+                    scene_transcript=scene_txt,
+                    frame_count=len(frames),
+                    frame_interval_ms=frame_interval_ms,
                 ),
             },
         ]
-        img_detail = os.environ.get("OPENAI_IMAGE_DETAIL", "low")
+        img_detail = config.OPENAI_IMAGE_DETAIL
         for _t_sec, fp in frames:
             user_content.append(
                 {
@@ -1010,23 +1329,100 @@ def explain_scene(
 
     cache_path.write_text(explanation, encoding="utf-8")
 
-    audio_url: str | None = None
+    summary_cache_path = explanations_dir / f"scene_{scene_index:03d}_summary.txt"
+    summary_text = None
+    duration_seconds = None
+
+    tp = transcripts_dir / f"scene_{scene_index:03d}.json"
+    duration_seconds = _get_scene_duration_seconds(
+        tp if tp.is_file() else None,
+        scene_mp4,
+    )
+
+    if duration_seconds:
+        try:
+            summary_text = _openai_summarize_explanation(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                explanation_text=explanation,
+                duration_seconds=duration_seconds,
+            )
+            summary_cache_path.write_text(summary_text, encoding="utf-8")
+        except Exception:
+            summary_text = None
+
+    grounded_cache_path = explanations_dir / f"scene_{scene_index:03d}_grounded.txt"
+    grounded_summary_text = None
+
+    if duration_seconds:
+        try:
+            grounded_summary_text = _openai_generate_grounded_summary(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                explanation_text=explanation,
+                scene_transcript=scene_txt,
+                duration_seconds=duration_seconds,
+            )
+            grounded_cache_path.write_text(grounded_summary_text, encoding="utf-8")
+        except Exception:
+            grounded_summary_text = None
+
+    explanation_audio_url: Optional[str] = None
     if _try_write_explanation_narration(
         base_url=base_url,
         api_key=api_key,
         explanation_text=explanation,
         mp3_path=audio_path,
     ):
-        audio_url = f"/api/explanations/{video_id}/{audio_name}"
+        explanation_audio_url = f"/api/explanations/{video_id}/{audio_name}"
+
+    summary_audio_url: Optional[str] = None
+    summary_audio_name = f"scene_{scene_index:03d}_summary.mp3"
+    summary_audio_path = explanations_dir / summary_audio_name
+
+    if summary_text and api_key:
+        try:
+            _openai_tts_to_mp3(
+                base_url=base_url,
+                api_key=api_key,
+                text=summary_text,
+                out_path=summary_audio_path,
+            )
+            summary_audio_url = f"/api/explanations/{video_id}/{summary_audio_name}"
+        except Exception:
+            summary_audio_url = None
+
+    grounded_audio_url: Optional[str] = None
+    grounded_audio_name = f"scene_{scene_index:03d}_grounded.mp3"
+    grounded_audio_path = explanations_dir / grounded_audio_name
+
+    if grounded_summary_text and api_key:
+        try:
+            _openai_tts_to_mp3(
+                base_url=base_url,
+                api_key=api_key,
+                text=grounded_summary_text,
+                out_path=grounded_audio_path,
+            )
+            grounded_audio_url = f"/api/explanations/{video_id}/{grounded_audio_name}"
+        except Exception:
+            grounded_audio_url = None
 
     return JSONResponse(
         {
             "explanation": explanation,
+            "summary": summary_text,
+            "grounded_summary": grounded_summary_text,
+            "duration_seconds": duration_seconds,
             "cached": False,
             "scene_index": scene_index,
             "frame_count": len(frames),
             "frame_interval_ms": frame_interval_ms,
-            "explanation_audio_url": audio_url,
+            "explanation_audio_url": explanation_audio_url,
+            "summary_audio_url": summary_audio_url,
+            "grounded_summary_audio_url": grounded_audio_url,
         },
     )
 
