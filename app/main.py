@@ -31,6 +31,13 @@ from app.prompts import (
     build_scene_explain_user_text,
     build_scene_summary_user_text,
     build_scene_grounded_summary_user_text,
+    format_video_context_for_prompt,
+)
+from app.transcription_provider import get_transcriber
+from app.video_context import (
+    analyze_video_for_context,
+    save_video_context,
+    load_video_context,
 )
 
 UPLOADS = ROOT / "uploads"
@@ -40,204 +47,9 @@ STATIC = ROOT / "static"
 UPLOADS.mkdir(parents=True, exist_ok=True)
 OUTPUTS.mkdir(parents=True, exist_ok=True)
 
-_whisper_model = None
-_whisper_model_name: Optional[str] = None
-
-
-def _get_whisper_model():  # pragma: no cover — loads ML weights on first use
-    global _whisper_model, _whisper_model_name
-    model_name = config.WHISPER_MODEL
-    if _whisper_model is not None and _whisper_model_name == model_name:
-        return _whisper_model
-    from faster_whisper import WhisperModel
-
-    device = config.WHISPER_DEVICE
-    compute = (
-        config.WHISPER_COMPUTE_TYPE_GPU
-        if device == "cuda"
-        else config.WHISPER_COMPUTE_TYPE_CPU
-    )
-    _whisper_model = WhisperModel(model_name, device=device, compute_type=compute)
-    _whisper_model_name = model_name
-    return _whisper_model
-
 
 def _which_ffmpeg() -> Optional[str]:
     return shutil.which("ffmpeg")
-
-
-def _audio_to_wav16k_mono(ffmpeg: str, src: Path, dst: Path) -> None:
-    subprocess.run(
-        [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-            str(src),
-            "-ar",
-            "16000",
-            "-ac",
-            "1",
-            "-c:a",
-            "pcm_s16le",
-            str(dst),
-        ],
-        check=True,
-    )
-
-
-def _human_speaker_labels(
-    turns: List[Tuple[float, float, str]],
-) -> Dict[str, str]:
-    ordered: List[str] = []
-    seen: Set[str] = set()
-    for _a, _b, raw in turns:
-        if raw not in seen:
-            seen.add(raw)
-            ordered.append(raw)
-    return {label: f"Speaker {i + 1}" for i, label in enumerate(ordered)}
-
-
-def _best_speaker_for_segment(
-    seg_start: float,
-    seg_end: float,
-    turns: List[Tuple[float, float, str]],
-    label_map: Dict[str, str],
-) -> Optional[str]:
-    best_raw: Optional[str] = None
-    best_ov = 0.0
-    for t0, t1, raw in turns:
-        overlap = max(0.0, min(seg_end, t1) - max(seg_start, t0))
-        if overlap > best_ov:
-            best_ov = overlap
-            best_raw = raw
-    if best_raw is None or best_ov <= 0:
-        return None
-    return label_map.get(best_raw)
-
-
-def _diarize_speakers(wav_path: Path) -> Optional[List[Tuple[float, float, str]]]:
-    token = (
-        os.environ.get("HF_TOKEN")
-        or os.environ.get("HUGGINGFACE_HUB_TOKEN")
-        or ""
-    ).strip()
-    if not token:
-        return None
-    try:
-        from pyannote.audio import Pipeline
-    except ImportError:
-        return None
-    try:
-        try:
-            pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                token=token,
-            )
-        except TypeError:
-            pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                use_auth_token=token,
-            )
-    except Exception:
-        return None
-    try:
-        diarization = pipeline(str(wav_path))
-    except Exception:
-        return None
-    rows: List[Tuple[float, float, str]] = []
-    for turn, _track, speaker in diarization.itertracks(yield_label=True):
-        rows.append((float(turn.start), float(turn.end), str(speaker)))
-    return rows if rows else None
-
-
-def _transcribe_audio_file(
-    audio_path: Path,
-    *,
-    ffmpeg: Optional[str],
-) -> dict:
-    turns: Optional[List[Tuple[float, float, str]]] = None
-    label_map: Dict[str, str] = {}
-    diar_meta: dict = {
-        "enabled": False,
-        "speaker_count": 0,
-        "note": (
-            "Set HF_TOKEN (Hugging Face) and accept the model terms for "
-            "pyannote/speaker-diarization-3.1; install pyannote.audio. "
-            "Otherwise only plain transcription is returned."
-        ),
-    }
-
-    if ffmpeg:
-        tmp_wav = Path(tempfile.gettempdir()) / (
-            f"test-clips-diar-{uuid.uuid4().hex}.wav"
-        )
-        try:
-            _audio_to_wav16k_mono(ffmpeg, audio_path, tmp_wav)
-            turns = _diarize_speakers(tmp_wav)
-            if turns:
-                label_map = _human_speaker_labels(turns)
-                diar_meta = {
-                    "enabled": True,
-                    "speaker_count": len(label_map),
-                }
-        except Exception:
-            diar_meta = {
-                "enabled": False,
-                "speaker_count": 0,
-                "note": "Diarization could not run (see server logs).",
-            }
-        finally:
-            tmp_wav.unlink(missing_ok=True)
-
-    model = _get_whisper_model()
-    segments_iter, info = model.transcribe(
-        str(audio_path),
-        word_timestamps=True,
-        vad_filter=True,
-    )
-    segments_out: List[Dict] = []
-    full_parts: List[str] = []
-    for seg in segments_iter:
-        words_out: List[Dict] = []
-        speaker_label: Optional[str] = None
-        if turns:
-            speaker_label = _best_speaker_for_segment(
-                seg.start,
-                seg.end,
-                turns,
-                label_map,
-            )
-        if seg.words:
-            for w in seg.words:
-                wd = {
-                    "start": round(w.start, 3),
-                    "end": round(w.end, 3),
-                    "word": w.word.strip(),
-                }
-                if speaker_label:
-                    wd["speaker"] = speaker_label
-                words_out.append(wd)
-        seg_text = (seg.text or "").strip()
-        full_parts.append(seg_text)
-        row: dict = {
-            "start": round(seg.start, 3),
-            "end": round(seg.end, 3),
-            "text": seg_text,
-            "words": words_out,
-        }
-        if speaker_label:
-            row["speaker"] = speaker_label
-        segments_out.append(row)
-    return {
-        "language": info.language,
-        "language_probability": round(float(info.language_probability), 4),
-        "diarization": diar_meta,
-        "segments": segments_out,
-        "text": " ".join(full_parts).strip(),
-    }
 
 
 def _probe_duration_seconds(video_path: Path) -> float:
@@ -426,6 +238,30 @@ def _extract_scene_audio(
         "aac",
         "-b:a",
         "192k",
+        str(audio_out),
+    ]
+    subprocess.run(cmd, check=True)
+
+
+def _extract_full_audio_wav(
+    ffmpeg: str,
+    video_file: Path,
+    audio_out: Path,
+) -> None:
+    """Extract full video audio to WAV format (preserving original quality)."""
+    cmd: list[str] = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(video_file),
+        "-vn",
+        "-map",
+        "0:a:0",
+        "-c:a",
+        "pcm_s16le",
         str(audio_out),
     ]
     subprocess.run(cmd, check=True)
@@ -875,6 +711,10 @@ def process(
         ge=config.MIN_SHOTS_PER_SCENE,
         le=config.MAX_SHOTS_PER_SCENE,
     ),
+    provider: Optional[str] = Query(
+        default=None,
+        description="Transcription provider: whisper or assemblyai. Defaults to config value.",
+    ),
 ):
     ffmpeg = _which_ffmpeg()
     if not ffmpeg:
@@ -918,6 +758,44 @@ def process(
         )
 
     has_audio = _has_audio_stream(video_path)
+
+    # Extract full video audio and transcribe once for entire video
+    full_transcript = None
+    if has_audio:
+        try:
+            full_audio_path = session_dir / "audio.wav"
+            _extract_full_audio_wav(ffmpeg, video_path, full_audio_path)
+
+            # Transcribe full audio once
+            try:
+                selected_provider = provider or config.TRANSCRIPTION_PROVIDER
+                transcriber = get_transcriber(selected_provider)
+            except ValueError as e:
+                raise HTTPException(status_code=503, detail=str(e)) from e
+
+            try:
+                result = transcriber.transcribe(full_audio_path)
+                full_transcript = result.to_dict()
+                full_transcript["provider_used"] = result.provider
+
+                # Save full video transcript
+                provider_suffix = result.provider if result.provider else "whisper"
+                full_transcript_path = transcripts_dir / f"full_video_{provider_suffix}.json"
+                full_transcript_path.write_text(
+                    json.dumps(full_transcript, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                print(f"✓ Full video transcribed with {result.provider} ({len(full_transcript.get('segments', []))} segments)")
+            except Exception as e:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Full video transcription failed: {e}",
+                ) from e
+        except HTTPException:
+            raise
+        except Exception as e:
+            # Non-blocking - continue processing even if audio extraction/transcription fails
+            print(f"Warning: Failed to transcribe full video for {video_id}: {e}")
 
     shot_entries: List[Dict] = []
     shot_paths_ordered: List[Path] = []
@@ -1002,34 +880,62 @@ def process(
                 ) from e
             entry["audio_filename"] = audio_name
             entry["audio_url"] = f"/api/clips/{video_id}/scene_audio/{audio_name}"
-            transcript_name = f"scene_{si:03d}.json"
-            transcript_path = transcripts_dir / transcript_name
-            try:
-                payload = _transcribe_audio_file(out_audio, ffmpeg=ffmpeg)
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Transcription failed for scene {si}: {e}. "
-                    "Ensure faster-whisper is installed and WHISPER_MODEL fits your machine.",
-                ) from e
-            payload["scene_index"] = si
-            payload["audio_filename"] = audio_name
-            payload["timeline_in_source_video"] = {
-                "start": round(start_s, 3),
-                "end": round(end_s, 3),
-            }
-            transcript_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            entry["transcript_filename"] = transcript_name
-            entry["transcript_url"] = f"/api/transcript/{video_id}/{transcript_name}"
+
+            # Use full transcript if available, extract segments for this scene
+            if full_transcript:
+                provider_suffix = full_transcript.get("provider_used", "whisper")
+
+                # Filter transcript segments for this scene's time range
+                scene_segments = [
+                    seg for seg in full_transcript.get("segments", [])
+                    if seg.get("start", 0) >= start_s and seg.get("end", float('inf')) <= end_s
+                ]
+
+                # Create scene-specific transcript with full context
+                scene_payload = {
+                    "scene_index": si,
+                    "audio_filename": audio_name,
+                    "timeline_in_source_video": {
+                        "start": round(start_s, 3),
+                        "end": round(end_s, 3),
+                    },
+                    "provider": provider_suffix,
+                    "language": full_transcript.get("language"),
+                    "language_probability": full_transcript.get("language_probability"),
+                    "diarization": full_transcript.get("diarization"),
+                    "segments": scene_segments,
+                    "text": " ".join([seg.get("text", "") for seg in scene_segments]).strip(),
+                    "full_video_transcript_file": f"full_video_{provider_suffix}.json",
+                }
+
+                transcript_name = f"scene_{si:03d}_{provider_suffix}.json"
+                transcript_path = transcripts_dir / transcript_name
+                transcript_path.write_text(
+                    json.dumps(scene_payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                entry["transcript_filename"] = transcript_name
+                entry["transcript_url"] = f"/api/transcript/{video_id}/{transcript_name}"
 
         scene_entries.append(entry)
+
+    # Automatically trigger video context analysis after processing
+    # (don't fail if it fails - it's optional)
+    try:
+        context = analyze_video_for_context(
+            video_path,
+            frame_interval_ms=config.SPARSE_FRAME_INTERVAL_MS,
+        )
+        if context:
+            save_video_context(context, video_id, OUTPUTS)
+    except Exception as e:
+        # Log but don't fail - video context is optional for scene explanations
+        print(f"Warning: Video context analysis failed for {video_id}: {e}")
 
     return {
         "video_id": video_id,
         "shots_per_scene": shots_per_scene,
+        "provider": provider or config.TRANSCRIPTION_PROVIDER,
         "shots": shot_entries,
         "scenes": scene_entries,
     }
@@ -1068,19 +974,35 @@ def list_outputs():
                 match = scene_file.stem.split("_")
                 if len(match) >= 2 and match[1].isdigit():
                     idx = int(match[1])
-                    scene_audio_name = f"scene_{idx:03d}.mp3"
+                    scene_audio_name = f"scene_{idx:03d}.m4a"
                     audio_path = video_dir / "scene_audio" / scene_audio_name
 
                     audio_url = None
                     if audio_path.is_file():
                         audio_url = f"/api/clips/{video_id}/scene_audio/{scene_audio_name}"
 
-                    transcript_name = f"scene_{idx:03d}.json"
-                    transcript_path = video_dir / "transcripts" / transcript_name
-
+                    # Look for transcript files with provider suffix (e.g., scene_001_assemblyai.json)
+                    # Prefer assemblyai over whisper if both exist
                     transcript_url = None
-                    if transcript_path.is_file():
-                        transcript_url = f"/api/transcript/{video_id}/{transcript_name}"
+                    transcript_name = None
+
+                    transcripts_dir = video_dir / "transcripts"
+                    if transcripts_dir.is_dir():
+                        # Check for AssemblyAI transcript first
+                        assemblyai_transcript = f"scene_{idx:03d}_assemblyai.json"
+                        assemblyai_path = transcripts_dir / assemblyai_transcript
+
+                        if assemblyai_path.is_file():
+                            transcript_name = assemblyai_transcript
+                            transcript_url = f"/api/transcript/{video_id}/{assemblyai_transcript}"
+                        else:
+                            # Fall back to Whisper transcript
+                            whisper_transcript = f"scene_{idx:03d}_whisper.json"
+                            whisper_path = transcripts_dir / whisper_transcript
+
+                            if whisper_path.is_file():
+                                transcript_name = whisper_transcript
+                                transcript_url = f"/api/transcript/{video_id}/{whisper_transcript}"
 
                     scenes.append({
                         "index": idx,
@@ -1115,6 +1037,38 @@ def clear_all():
     return JSONResponse({"status": "ok", "message": "No outputs to clear"})
 
 
+@app.get("/api/transcript/{video_id}/full-video")
+def get_full_video_transcript(video_id: str):
+    """Get the full video transcript with all speakers and timings."""
+    transcripts_dir = OUTPUTS / video_id / "transcripts"
+
+    if not transcripts_dir.is_dir():
+        raise HTTPException(status_code=404, detail="No transcripts available")
+
+    # Look for full_video transcript (prefer assemblyai over whisper)
+    full_video_files = list(transcripts_dir.glob("full_video_*.json"))
+
+    if not full_video_files:
+        raise HTTPException(status_code=404, detail="Full video transcript not found")
+
+    # Prefer assemblyai if both exist
+    full_video_path = None
+    for f in full_video_files:
+        if "assemblyai" in f.name:
+            full_video_path = f
+            break
+
+    if not full_video_path:
+        full_video_path = full_video_files[0]
+
+    try:
+        data = json.loads(full_video_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Invalid transcript file")
+
+    return JSONResponse(data)
+
+
 @app.get("/api/transcript/{video_id}/{filename}")
 def get_transcript(video_id: str, filename: str):
     safe = Path(filename).name
@@ -1133,6 +1087,79 @@ def get_transcript(video_id: str, filename: str):
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="Invalid transcript file")
     return JSONResponse(data)
+
+
+@app.post("/api/analyze-video/{video_id}")
+def analyze_video_endpoint(video_id: str):
+    """
+    Analyze entire video for character and object continuity.
+
+    This endpoint extracts sparse frames from the video, performs face
+    detection/clustering and object detection, and caches the results
+    for use in scene explanations.
+    """
+    session = OUTPUTS / video_id
+    video_file = session / "input.mp4"
+
+    if not video_file.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Video file not found",
+        )
+
+    # Check if analysis is already cached
+    existing_context = load_video_context(video_id, OUTPUTS)
+    if existing_context is not None:
+        return JSONResponse({
+            "status": "cached",
+            "message": "Video context already analyzed",
+            "characters_count": len(existing_context.characters),
+            "objects_count": len(existing_context.objects),
+        })
+
+    try:
+        # Analyze video for context
+        context = analyze_video_for_context(
+            video_file,
+            frame_interval_ms=config.SPARSE_FRAME_INTERVAL_MS,
+        )
+
+        if context is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Video analysis failed",
+            )
+
+        # Cache the context
+        save_video_context(context, video_id, OUTPUTS)
+
+        return JSONResponse({
+            "status": "success",
+            "message": "Video analysis completed",
+            "characters_count": len(context.characters),
+            "objects_count": len(context.objects),
+            "characters": [
+                {
+                    "id": c.id,
+                    "confidence": c.confidence,
+                    "appearance_count": len(c.appearances),
+                }
+                for c in context.characters
+            ],
+            "objects": [
+                {
+                    "id": o.id,
+                    "class": o.class_label,
+                    "appearance_count": len(o.appearances),
+                }
+                for o in context.objects
+            ],
+        })
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Video analysis failed: {e}",
+        ) from e
 
 
 @app.post("/api/explain-scene/{video_id}/{scene_index}")
@@ -1285,6 +1312,15 @@ def explain_scene(
                 detail="Could not extract frames from scene video",
             )
 
+        # Load video context if available
+        video_context = load_video_context(video_id, OUTPUTS)
+        video_context_text = ""
+        if video_context:
+            video_context_text = format_video_context_for_prompt(
+                video_context,
+                character_confidence_threshold=config.CHARACTER_CONFIDENCE_THRESHOLD_PERCENT,
+            )
+
         user_content: List[Dict] = [
             {
                 "type": "text",
@@ -1293,6 +1329,7 @@ def explain_scene(
                     scene_transcript=scene_txt,
                     frame_count=len(frames),
                     frame_interval_ms=frame_interval_ms,
+                    video_context_text=video_context_text,
                 ),
             },
         ]
