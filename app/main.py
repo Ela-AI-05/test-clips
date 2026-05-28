@@ -28,9 +28,11 @@ from app.prompts import (
     SCENE_EXPLAIN_SYSTEM_PROMPT,
     SCENE_SUMMARY_SYSTEM_PROMPT,
     SCENE_GROUNDED_SUMMARY_SYSTEM_PROMPT,
+    SCENE_TRANSCRIPT_ENHANCEMENT_SYSTEM_PROMPT,
     build_scene_explain_user_text,
     build_scene_summary_user_text,
     build_scene_grounded_summary_user_text,
+    build_transcript_enhancement_user_text,
     format_video_context_for_prompt,
 )
 from app.transcription_provider import get_transcriber
@@ -317,7 +319,12 @@ def _scene_transcript_block(transcript_path: Optional[Path]) -> str:
         data = json.loads(transcript_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return "(Transcript file could not be read.)"
-    segs = data.get("segments") or []
+    return _format_transcript_segments(data)
+
+
+def _format_transcript_segments(transcript_data: dict) -> str:
+    """Format transcript dict into readable text with timestamps and speakers."""
+    segs = transcript_data.get("segments") or []
     lines: List[str] = []
     for s in segs:
         t = (s.get("text") or "").strip()
@@ -330,7 +337,7 @@ def _scene_transcript_block(transcript_path: Optional[Path]) -> str:
         lines.append(f"[{st:.1f}s–{en:.1f}s] {sp_part}{t}")
     if lines:
         return "\n".join(lines)
-    return (data.get("text") or "").strip() or "(Empty transcript.)"
+    return (transcript_data.get("text") or "").strip() or "(Empty transcript.)"
 
 
 def _extract_scene_frames_jpeg(
@@ -604,6 +611,73 @@ def _openai_generate_grounded_summary(
     choices = data.get("choices") or []
     if not choices:
         raise RuntimeError(f"No choices in grounded summary response: {data}")
+
+    msg = choices[0].get("message") or {}
+    return (msg.get("content") or "").strip()
+
+
+def _openai_enhance_scene_transcript(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    scene_transcript: str,
+    grounded_summary: str,
+    video_context_text: str = "",
+) -> str:
+    """Enhance scene transcript with visual/contextual details using a second AI model.
+
+    Adds speaker identification, objects, actions, and scene context from grounded summary
+    and video context to make the transcript more informative for narration audiences.
+
+    Args:
+        base_url: OpenAI API base URL
+        api_key: OpenAI API key
+        model: Model to use for enhancement
+        scene_transcript: Scene transcript with timestamps and speakers
+        grounded_summary: Grounded summary text from visual analysis
+        video_context_text: Character and object detection data (optional)
+
+    Returns:
+        Enhanced transcript text with added contextual details
+
+    Raises:
+        RuntimeError: If API request fails
+    """
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    payload = {
+        "model": model,
+        "max_tokens": 2000,
+        "temperature": 0.3,
+        "messages": [
+            {"role": "system", "content": SCENE_TRANSCRIPT_ENHANCEMENT_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": build_transcript_enhancement_user_text(
+                    scene_transcript=scene_transcript,
+                    grounded_summary=grounded_summary,
+                    video_context_text=video_context_text,
+                ),
+            },
+        ],
+    }
+
+    r = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=config.OPENAI_GROUNDED_SUMMARY_TIMEOUT,
+    )
+    if not r.ok:
+        raise RuntimeError(r.text)
+
+    data = r.json()
+    choices = data.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"No choices in enhancement response: {data}")
 
     msg = choices[0].get("message") or {}
     return (msg.get("content") or "").strip()
@@ -1461,6 +1535,139 @@ def explain_scene(
             "summary_audio_url": summary_audio_url,
             "grounded_summary_audio_url": grounded_audio_url,
         },
+    )
+
+
+@app.post("/api/enhance-transcript/{video_id}/{scene_index}")
+def enhance_transcript(
+    video_id: str,
+    scene_index: int,
+    regenerate: bool = Query(False),
+):
+    """Enhance scene transcript with visual/contextual details.
+
+    Takes scene-specific transcript and grounded summary, then uses a second AI model
+    to add speaker identification, objects, actions, and scene context.
+
+    Args:
+        video_id: Video identifier
+        scene_index: 0-indexed scene number
+        regenerate: If true, regenerate even if cached
+
+    Returns:
+        JSON with enhanced_transcript text and audio URL
+    """
+    if not config.OPENAI_API_KEY:
+        return JSONResponse(
+            {"error": "OPENAI_API_KEY not configured"},
+            status_code=503,
+        )
+
+    video_dir = OUTPUTS / video_id
+    if not video_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Determine which provider was used
+    providers = ["whisper", "assemblyai"]
+    provider = None
+    for p in providers:
+        if (video_dir / "transcripts" / f"scene_{scene_index:03d}_{p}.json").is_file():
+            provider = p
+            break
+
+    if not provider:
+        raise HTTPException(status_code=404, detail="Scene transcript not found")
+
+    # Check cache
+    enhanced_cache = video_dir / "explanations" / f"scene_{scene_index:03d}_enhanced_transcript.txt"
+    if enhanced_cache.is_file() and not regenerate:
+        cached_text = enhanced_cache.read_text(encoding="utf-8").strip()
+        audio_url = f"/api/explanations/{video_id}/scene_{scene_index:03d}_enhanced_transcript.mp3"
+        return JSONResponse(
+            {
+                "enhanced_transcript": cached_text,
+                "enhanced_transcript_audio_url": audio_url,
+                "cached": True,
+            }
+        )
+
+    # Load scene transcript
+    scene_transcript_path = video_dir / "transcripts" / f"scene_{scene_index:03d}_{provider}.json"
+    try:
+        scene_data = json.loads(scene_transcript_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load scene transcript: {e}")
+
+    # Build scene transcript text
+    scene_transcript_text = _format_transcript_segments(scene_data)
+
+    # Load grounded summary
+    grounded_path = video_dir / "explanations" / f"scene_{scene_index:03d}_grounded.txt"
+    if not grounded_path.is_file():
+        raise HTTPException(
+            status_code=400,
+            detail="Grounded summary not generated. Generate explanation first.",
+        )
+    grounded_summary_text = grounded_path.read_text(encoding="utf-8").strip()
+
+    # Load video context if available
+    video_context_text = ""
+    context_path = video_dir / "video_context.json"
+    if context_path.is_file():
+        try:
+            video_context = load_video_context(context_path)
+            video_context_text = format_video_context_for_prompt(
+                video_context,
+                character_confidence_threshold=config.CHARACTER_CONFIDENCE_THRESHOLD_PERCENT,
+            )
+        except Exception:
+            pass
+
+    # Generate enhancement
+    try:
+        enhanced_text = _openai_enhance_scene_transcript(
+            base_url=config.OPENAI_BASE_URL,
+            api_key=config.OPENAI_API_KEY,
+            model=config.OPENAI_EXPLAIN_MODEL,
+            scene_transcript=scene_transcript_text,
+            grounded_summary=grounded_summary_text,
+            video_context_text=video_context_text,
+        )
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Enhancement failed: {e}"},
+            status_code=500,
+        )
+
+    # Cache enhanced transcript
+    video_dir / "explanations"
+    (video_dir / "explanations").mkdir(parents=True, exist_ok=True)
+    enhanced_cache.write_text(enhanced_text, encoding="utf-8")
+
+    # Generate TTS audio
+    audio_url = None
+    mp3_path = video_dir / "explanations" / f"scene_{scene_index:03d}_enhanced_transcript.mp3"
+    if config.OPENAI_API_KEY and not mp3_path.is_file():
+        try:
+            text_to_speak = _tts_input_clip(enhanced_text)
+            _openai_tts_to_mp3(
+                base_url=config.OPENAI_BASE_URL,
+                api_key=config.OPENAI_API_KEY,
+                text=text_to_speak,
+                out_path=mp3_path,
+            )
+        except Exception as e:
+            print(f"TTS generation failed for enhanced transcript: {e}")
+
+    if mp3_path.is_file():
+        audio_url = f"/api/explanations/{video_id}/scene_{scene_index:03d}_enhanced_transcript.mp3"
+
+    return JSONResponse(
+        {
+            "enhanced_transcript": enhanced_text,
+            "enhanced_transcript_audio_url": audio_url,
+            "cached": False,
+        }
     )
 
 

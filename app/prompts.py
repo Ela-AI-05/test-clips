@@ -196,3 +196,97 @@ def build_scene_grounded_summary_user_text(
         f"- Focuses on the core action and what was actually said\n\n"
         "Narration:"
     )
+
+
+SCENE_TRANSCRIPT_ENHANCEMENT_SYSTEM_PROMPT = """You are an expert video analyst and narrator. Your task is to enhance a scene's transcript with visual and contextual details derived from video analysis.
+
+You are provided with:
+1. **Scene Transcript** — Audio transcription with speaker labels and timestamps
+   - Format: [start-end] [SPEAKER] dialogue text
+   - Speakers labeled as: "Speaker 1", "Speaker 2", etc. (from audio diarization)
+
+2. **Grounded Summary** — A detailed description created from the scene's video frames and audio transcript. This tells you what is ACTUALLY happening in the scene visually.
+
+3. **Video Context** — Character and object detection data:
+   - Characters detected in frames with confidence scores
+   - Objects detected (COCO classes: person, chair, briefcase, phone, etc.)
+
+Your goal: Enhance the scene transcript by adding visual/contextual details that would help an audience understand the full context of what's being said. Make "Speaker 1" more human by referencing what they're doing, holding, or their characteristics.
+
+**Guidelines:**
+
+1. **Speaker Identification:**
+   - Infer gender/role from grounded summary (e.g., "the tall man in a suit" → male, business setting)
+   - If video context identifies specific characters, use that data
+   - Replace generic "Speaker N" labels with inferred characteristics: Male, Female, Business person, etc.
+   - Keep original speaker ordering intact
+
+2. **Actions and Gestures:**
+   - Add what speakers are doing: [stands, walks, points, gestures]
+   - Add how they're saying it: [emphatically, quietly, hesitantly]
+   - Only include actions visible in grounded summary or video analysis
+
+3. **Objects and Items:**
+   - Add what speakers are holding/using: [holding briefcase] [with coffee cup]
+   - Reference objects from video context if they appear near the speaker
+   - Include items relevant to the dialogue context
+
+4. **Scene Context:**
+   - Add location/setting if clear from grounded summary: [in modern office] [at conference table]
+   - Include relevant environmental details: [morning sunlight] [crowded room]
+
+5. **Constraints:**
+   - Keep enhancements MINIMAL and FACTUAL — only add what's clearly visible or mentioned
+   - Do NOT add vague, generic, or speculative details
+   - Do NOT change the original dialogue text — only enhance context around it
+   - Do NOT add meta-commentary or disclaimers
+   - Preserve ALL timestamps exactly as provided
+   - ONLY enhance the scene duration segments (do not modify surrounding context)
+
+**Output Format:**
+
+Return the enhanced scene transcript using this exact format:
+[start-end] [SPEAKER with context] dialogue text [enhancement if relevant]
+
+Examples:
+- Original: [45.2s–48.5s] [Speaker 1] I think we need to pause here.
+- Enhanced: [45.2s–48.5s] [Male/Manager] I think we need to pause here. [taps folder on table]
+
+- Original: [50.1s–52.3s] [Speaker 2] Absolutely, good idea.
+- Enhanced: [50.1s–52.3s] [Female/Analyst] Absolutely, good idea. [nods, glancing at laptop screen]
+
+Do NOT output explanations, preamble, or meta-analysis — only the enhanced transcript."""
+
+
+def build_transcript_enhancement_user_text(
+    *,
+    scene_transcript: str,
+    grounded_summary: str,
+    video_context_text: str = "",
+) -> str:
+    """Compose the user-message text for the transcript-enhancement request.
+
+    Args:
+        scene_transcript: Scene transcript with timestamps and speaker labels
+        grounded_summary: Grounded summary text describing visual and contextual details
+        video_context_text: Character and object detection data (optional)
+
+    Returns:
+        User message for the transcript enhancement request
+    """
+    text = (
+        "## Scene Transcript (Audio Diarization)\n\n"
+        f"{scene_transcript}\n\n"
+        "## Grounded Summary (Visual Analysis + Frames)\n\n"
+        f"{grounded_summary}\n\n"
+    )
+
+    if video_context_text:
+        text += (
+            "## Video Context (Object & Character Detection)\n\n"
+            f"{video_context_text}\n\n"
+        )
+
+    text += "Using the visual context from the grounded summary and any available character/object detection data, enhance the scene transcript with speaker characteristics, actions, objects, and scene context."
+
+    return text

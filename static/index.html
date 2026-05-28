@@ -390,6 +390,7 @@
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
           <h3 id="full-transcript-title" style="margin: 0;">Full Video Transcript</h3>
           <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button type="button" id="full-transcript-toggle-enhanced" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="Show enhanced segments">Show Enhanced</button>
             <button type="button" id="full-transcript-download-txt" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="Download as plain text">Download (.txt)</button>
             <button type="button" id="full-transcript-download-vtt" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="Download as WebVTT subtitle file">Download (.vtt)</button>
             <button type="button" class="modal-close" id="full-transcript-close" aria-label="Close">×</button>
@@ -397,6 +398,12 @@
         </div>
         <p class="modal-meta" id="full-transcript-meta"></p>
         <div class="modal-transcript" id="full-transcript-body"></div>
+        <div id="full-transcript-enhanced-overlay" style="display: none; margin-top: 1rem; padding: 1rem; background: #1f2937; border-radius: 6px;">
+          <div style="font-size: 0.9rem; font-weight: 600; color: #10b981; margin-bottom: 0.75rem;">
+            Enhanced Segments (click to see enhancement)
+          </div>
+          <div id="full-transcript-enhanced-list"></div>
+        </div>
       </div>
     </div>
 
@@ -414,6 +421,7 @@
                 <option value="2000" title="0.5 frames/sec - minimal">0.5/s</option>
               </select>
             </div>
+            <button type="button" id="explain-enhance-transcript" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">Enhance Transcript</button>
             <button type="button" id="explain-regenerate" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">Regenerate</button>
             <button type="button" class="modal-close" id="explain-close" aria-label="Close">×</button>
           </div>
@@ -451,6 +459,17 @@
             ></audio>
             <p class="no-audio" id="no-grounded-audio" style="margin: 0; font-size: 0.8rem; color: #6b7280;">Generating grounded summary audio…</p>
           </div>
+          <div>
+            <div style="font-size: 0.85rem; font-weight: 600; color: #d1d5db; margin-bottom: 0.35rem;">Enhanced Transcript Audio</div>
+            <audio
+              id="enhanced-transcript-audio"
+              class="modal-audio"
+              controls
+              preload="metadata"
+              style="display: none;"
+            ></audio>
+            <p class="no-audio" id="no-enhanced-audio" style="margin: 0; font-size: 0.8rem; color: #6b7280;">Generating enhanced transcript audio…</p>
+          </div>
         </div>
         <div id="explain-sections" class="explain-sections">
           <div id="explanation-section" class="explain-section">
@@ -464,6 +483,35 @@
           <div id="grounded-summary-section" class="explain-section" style="display: none;">
             <div class="explain-section-title">Grounded Summary (Scene Duration)</div>
             <div id="explain-grounded-summary" class="explain-section-content"></div>
+          </div>
+          <div id="enhanced-transcript-section" class="explain-section" style="display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+              <div class="explain-section-title" style="margin: 0;">Enhanced Transcript</div>
+              <div style="display: flex; gap: 0.5rem;">
+                <button type="button" id="toggle-comparison-view" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">Compare</button>
+                <button type="button" id="download-enhanced-txt" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">Download</button>
+                <button type="button" id="regenerate-enhanced" class="secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">Regenerate</button>
+              </div>
+            </div>
+
+            <!-- Single view (default) -->
+            <div id="enhanced-transcript-single" style="display: block;">
+              <div id="explain-enhanced-transcript" class="explain-section-content"></div>
+            </div>
+
+            <!-- Side-by-side comparison view -->
+            <div id="enhanced-transcript-comparison" style="display: none; margin-top: 0.5rem;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div>
+                  <div style="font-size: 0.9rem; font-weight: 600; color: #9ca3af; margin-bottom: 0.5rem;">Original Transcript</div>
+                  <div id="original-transcript-display" style="border: 1px solid #374151; padding: 0.75rem; border-radius: 4px; max-height: 500px; overflow-y: auto; font-size: 0.85rem; background: #0f0f0f; white-space: pre-wrap;"></div>
+                </div>
+                <div>
+                  <div style="font-size: 0.9rem; font-weight: 600; color: #10b981; margin-bottom: 0.5rem;">Enhanced Transcript</div>
+                  <div id="enhanced-transcript-display" style="border: 1px solid #3b82f6; padding: 0.75rem; border-radius: 4px; max-height: 500px; overflow-y: auto; font-size: 0.85rem; background: #0f0f0f; white-space: pre-wrap;"></div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -493,19 +541,32 @@
       const summarySection = document.getElementById("summary-section");
       const explainGroundedSummary = document.getElementById("explain-grounded-summary");
       const groundedSummarySection = document.getElementById("grounded-summary-section");
+      const explainEnhancedTranscript = document.getElementById("explain-enhanced-transcript");
+      const enhancedTranscriptSection = document.getElementById("enhanced-transcript-section");
+      const enhancedTranscriptSingle = document.getElementById("enhanced-transcript-single");
+      const enhancedTranscriptComparison = document.getElementById("enhanced-transcript-comparison");
+      const originalTranscriptDisplay = document.getElementById("original-transcript-display");
+      const enhancedTranscriptDisplay = document.getElementById("enhanced-transcript-display");
+      const toggleComparisonBtn = document.getElementById("toggle-comparison-view");
       const explainClose = document.getElementById("explain-close");
       const explainNarration = document.getElementById("explain-narration-audio");
       const summaryNarration = document.getElementById("summary-narration-audio");
       const groundedNarration = document.getElementById("grounded-narration-audio");
+      const enhancedAudio = document.getElementById("enhanced-transcript-audio");
       const audioSection = document.getElementById("audio-section");
       const noSummaryAudio = document.getElementById("no-summary-audio");
       const noGroundedAudio = document.getElementById("no-grounded-audio");
+      const noEnhancedAudio = document.getElementById("no-enhanced-audio");
       const explainRegenerateBtn = document.getElementById("explain-regenerate");
+      const explainEnhanceTranscriptBtn = document.getElementById("explain-enhance-transcript");
+      const downloadEnhancedTxtBtn = document.getElementById("download-enhanced-txt");
+      const regenerateEnhancedBtn = document.getElementById("regenerate-enhanced");
       const modalFrameIntervalSelect = document.getElementById("modal-frame-interval");
 
       let uploadedId = null;
       let currentExplainScene = null; // { videoId, scene, frameInterval }
       let currentFullTranscriptData = null;
+      let enhancedTranscriptsByScene = {}; // { scene_index: "enhanced text", ... }
 
       function fmtRange(start, end) {
         return `[${start.toFixed(2)}s – ${end.toFixed(2)}s]`;
@@ -519,6 +580,8 @@
         summarySection.style.display = "none";
         explainGroundedSummary.innerHTML = "";
         groundedSummarySection.style.display = "none";
+        explainEnhancedTranscript.innerHTML = "";
+        enhancedTranscriptSection.style.display = "none";
         explainMeta.textContent = "";
         audioSection.style.display = "none";
         explainNarration.pause();
@@ -532,8 +595,13 @@
         groundedNarration.removeAttribute("src");
         groundedNarration.load();
         groundedNarration.style.display = "none";
+        enhancedAudio.pause();
+        enhancedAudio.removeAttribute("src");
+        enhancedAudio.load();
+        enhancedAudio.style.display = "none";
         currentExplainScene = null;
         explainRegenerateBtn.disabled = true;
+        explainEnhanceTranscriptBtn.disabled = false;
       }
 
       function _displayExplanation(data) {
@@ -626,6 +694,134 @@
           });
       }
 
+      function _populateComparisonView(scene, enhancedData) {
+        // Try both providers to find the original transcript
+        const videoId = currentExplainScene.videoId;
+        const sceneIndex = scene.index;
+        const providers = ["assemblyai", "whisper"];
+
+        // Format the enhanced transcript we already have (RIGHT COLUMN)
+        let enhancedHtml = "";
+        const enhancedText = enhancedData.enhanced_transcript || "";
+        const lines = enhancedText.split('\n').filter(l => l.trim());
+
+        lines.forEach(line => {
+          if (line.trim()) {
+            enhancedHtml += `
+              <div style="margin-bottom: 0.75rem; padding: 0.5rem; background: #1f2937; border-radius: 4px;">
+                <div style="color: #e8e6e3; line-height: 1.4;">${line}</div>
+              </div>
+            `;
+          }
+        });
+        if (!enhancedHtml) {
+          enhancedHtml = '<p style="color: #6b7280;">No enhanced transcript available</p>';
+        }
+        enhancedTranscriptDisplay.innerHTML = enhancedHtml;
+
+        // Load original transcript (LEFT COLUMN) - try providers in order
+        function loadOriginal(providerIndex) {
+          if (providerIndex >= providers.length) {
+            originalTranscriptDisplay.innerHTML = '<p style="color: #ef4444;">Could not load original transcript</p>';
+            return;
+          }
+
+          const provider = providers[providerIndex];
+          const filename = `scene_${sceneIndex.toString().padStart(3, '0')}_${provider}.json`;
+
+          fetch(`/api/transcript/${videoId}/${filename}`)
+            .then(r => {
+              if (!r.ok) throw new Error("Not found");
+              return r.json();
+            })
+            .then(data => {
+              // Format ORIGINAL transcript with just speaker labels and text
+              let originalHtml = "";
+              const segs = data.segments || [];
+              segs.forEach(seg => {
+                const speaker = seg.speaker || "Unknown";
+                const start = seg.start ? seg.start.toFixed(1) : "0.0";
+                const end = seg.end ? seg.end.toFixed(1) : "0.0";
+                const text = seg.text || "";
+                originalHtml += `
+                  <div style="margin-bottom: 0.75rem; padding: 0.5rem; background: #1f2937; border-radius: 4px;">
+                    <div style="font-size: 0.75rem; color: #9ca3af; margin-bottom: 0.25rem;">[${start}s–${end}s]</div>
+                    <div>
+                      <span style="font-weight: 600; color: #60a5fa;">[${speaker}]</span>
+                      <span style="color: #e8e6e3; margin-left: 0.5rem;">${text}</span>
+                    </div>
+                  </div>
+                `;
+              });
+              if (!originalHtml) {
+                originalHtml = '<p style="color: #6b7280;">No segments in transcript</p>';
+              }
+              originalTranscriptDisplay.innerHTML = originalHtml;
+            })
+            .catch(err => {
+              // Try next provider
+              loadOriginal(providerIndex + 1);
+            });
+        }
+
+        // Start loading with first provider
+        loadOriginal(0);
+      }
+
+      function _fetchEnhancedTranscript(videoId, scene, regenerate = false) {
+        const qs = new URLSearchParams();
+        if (regenerate) {
+          qs.append("regenerate", "true");
+        }
+        explainEnhanceTranscriptBtn.disabled = true;
+        regenerateEnhancedBtn.disabled = true;
+        explainEnhancedTranscript.innerHTML = '<p class="modal-loading">Enhancing transcript with visual context…</p>';
+
+        fetch(`/api/enhance-transcript/${videoId}/${scene.index}?${qs}`, {
+          method: "POST",
+        })
+          .then(async (r) => {
+            if (!r.ok) {
+              const errorText = await r.text();
+              try {
+                const errorJson = JSON.parse(errorText);
+                throw new Error(errorJson.detail || errorJson.message || errorText);
+              } catch {
+                throw new Error(errorText);
+              }
+            }
+            return r.json();
+          })
+          .then((data) => {
+            explainEnhancedTranscript.textContent = data.enhanced_transcript || "";
+            enhancedTranscriptSection.style.display = "flex";
+
+            // Store for full transcript view
+            enhancedTranscriptsByScene[scene.index] = data.enhanced_transcript || "";
+
+            // Populate comparison views
+            _populateComparisonView(scene, data);
+
+            // Display enhanced transcript audio if available
+            if (data.enhanced_transcript_audio_url) {
+              enhancedAudio.src = data.enhanced_transcript_audio_url;
+              enhancedAudio.style.display = "block";
+              noEnhancedAudio.style.display = "none";
+            } else {
+              enhancedAudio.style.display = "none";
+              noEnhancedAudio.style.display = "block";
+            }
+          })
+          .catch((e) => {
+            const errorMsg = e.message || String(e);
+            explainEnhancedTranscript.innerHTML = `<p class="modal-error">${errorMsg}</p>`;
+          })
+          .finally(() => {
+            explainEnhanceTranscriptBtn.disabled = false;
+            regenerateEnhancedBtn.disabled = false;
+          });
+      }
+
       function openExplainModal(videoId, scene, frameInterval = 500) {
         currentExplainScene = { videoId, scene, frameInterval };
         explainTitle.textContent = `Scene ${scene.index} · explanation`;
@@ -643,9 +839,14 @@
         groundedNarration.removeAttribute("src");
         groundedNarration.load();
         groundedNarration.style.display = "none";
+        enhancedAudio.pause();
+        enhancedAudio.removeAttribute("src");
+        enhancedAudio.load();
+        enhancedAudio.style.display = "none";
         audioSection.style.display = "none";
         modalFrameIntervalSelect.value = String(frameInterval);
         explainRegenerateBtn.disabled = false;
+        explainEnhanceTranscriptBtn.disabled = false;
         explainModal.classList.remove("hidden");
         explainModal.setAttribute("aria-hidden", "false");
         _fetchExplanation(videoId, scene, frameInterval);
@@ -823,6 +1024,47 @@
           explainRegenerateBtn.disabled = false;
         }
       });
+
+      explainEnhanceTranscriptBtn.addEventListener("click", () => {
+        if (!currentExplainScene) return;
+        _fetchEnhancedTranscript(currentExplainScene.videoId, currentExplainScene.scene, false);
+      });
+
+      regenerateEnhancedBtn.addEventListener("click", () => {
+        if (!currentExplainScene) return;
+        _fetchEnhancedTranscript(currentExplainScene.videoId, currentExplainScene.scene, true);
+      });
+
+      toggleComparisonBtn.addEventListener("click", () => {
+        const isShowingSingle = enhancedTranscriptSingle.style.display !== "none";
+
+        if (isShowingSingle) {
+          // Switch to comparison view
+          enhancedTranscriptSingle.style.display = "none";
+          enhancedTranscriptComparison.style.display = "block";
+          toggleComparisonBtn.textContent = "Single View";
+        } else {
+          // Switch to single view
+          enhancedTranscriptSingle.style.display = "block";
+          enhancedTranscriptComparison.style.display = "none";
+          toggleComparisonBtn.textContent = "Compare";
+        }
+      });
+
+      downloadEnhancedTxtBtn.addEventListener("click", () => {
+        const text = explainEnhancedTranscript.textContent;
+        if (!text) return;
+        const blob = new Blob([text], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `enhanced-transcript-scene-${currentExplainScene?.scene?.index ?? 0}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
+
       explainModal.addEventListener("click", (e) => {
         if (e.target === explainModal) closeExplainModal();
       });
@@ -838,13 +1080,53 @@
       const fullTranscriptClose = document.getElementById("full-transcript-close");
       const fullTranscriptDownloadTxtBtn = document.getElementById("full-transcript-download-txt");
       const fullTranscriptDownloadVttBtn = document.getElementById("full-transcript-download-vtt");
+      const fullTranscriptToggleEnhanced = document.getElementById("full-transcript-toggle-enhanced");
+      const fullTranscriptEnhancedOverlay = document.getElementById("full-transcript-enhanced-overlay");
+      const fullTranscriptEnhancedList = document.getElementById("full-transcript-enhanced-list");
 
       function closeFullTranscriptModal() {
         fullTranscriptModal.classList.add("hidden");
         fullTranscriptModal.setAttribute("aria-hidden", "true");
         fullTranscriptBody.innerHTML = "";
         fullTranscriptMeta.textContent = "";
+        fullTranscriptEnhancedOverlay.style.display = "none";
         currentFullTranscriptData = null;
+      }
+
+      function toggleFullTranscriptEnhanced() {
+        const hasEnhanced = Object.keys(enhancedTranscriptsByScene).length > 0;
+
+        if (!hasEnhanced) {
+          alert("No enhanced transcripts available. Generate scene enhancements first.");
+          return;
+        }
+
+        const isShowing = fullTranscriptEnhancedOverlay.style.display !== "none";
+
+        if (isShowing) {
+          // Hide overlay
+          fullTranscriptEnhancedOverlay.style.display = "none";
+          fullTranscriptToggleEnhanced.textContent = "Show Enhanced";
+        } else {
+          // Show overlay with enhanced segments
+          fullTranscriptEnhancedList.innerHTML = "";
+          Object.entries(enhancedTranscriptsByScene).forEach(([sceneIdx, enhancedText]) => {
+            const card = document.createElement("div");
+            card.style.cssText = "margin-bottom: 1rem; padding: 0.75rem; background: #0f0f0f; border-radius: 4px; border-left: 3px solid #10b981; cursor: pointer;";
+            card.innerHTML = `
+              <div style="font-size: 0.9rem; font-weight: 600; color: #10b981; margin-bottom: 0.5rem;">Scene ${parseInt(sceneIdx) + 1}</div>
+              <div style="font-size: 0.85rem; color: #d1d5db; line-height: 1.4;">${enhancedText.split('\n').slice(0, 2).join('<br/>')}</div>
+              <div style="font-size: 0.75rem; color: #6b7280; margin-top: 0.5rem;">Click to see full enhancement</div>
+            `;
+            card.addEventListener("click", () => {
+              alert(`Scene ${parseInt(sceneIdx) + 1} Enhanced Transcript:\n\n${enhancedText}`);
+            });
+            fullTranscriptEnhancedList.appendChild(card);
+          });
+
+          fullTranscriptEnhancedOverlay.style.display = "block";
+          fullTranscriptToggleEnhanced.textContent = "Hide Enhanced";
+        }
       }
 
       function downloadFullTranscriptAsTxt() {
@@ -987,6 +1269,7 @@
       });
 
       fullTranscriptClose.addEventListener("click", closeFullTranscriptModal);
+      fullTranscriptToggleEnhanced.addEventListener("click", toggleFullTranscriptEnhanced);
       fullTranscriptDownloadTxtBtn.addEventListener("click", downloadFullTranscriptAsTxt);
       fullTranscriptDownloadVttBtn.addEventListener("click", downloadFullTranscriptAsVtt);
       fullTranscriptModal.addEventListener("click", (e) => {
